@@ -1,0 +1,35 @@
+# Ambiente Virtual
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Modelos treinados (muito grandes para Git)
+models/*.h5
+models/*.keras
+
+# Dados brutos (muito grandes para Git)
+UR_Fall_Downloads/
+data/raw/Fall/*.avi
+data/raw/Normal/*.avi
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
