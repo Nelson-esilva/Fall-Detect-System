@@ -9,27 +9,56 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+*.egg-info/
+dist/
+build/
 
 # Modelos treinados (muito grandes para Git)
 models/*.h5
 models/*.keras
+models/*.pb
+models/*.tflite
 
 # Dados brutos (muito grandes para Git)
 UR_Fall_Downloads/
 data/raw/Fall/*.avi
+data/raw/Fall/*.mp4
 data/raw/Normal/*.avi
+data/raw/Normal/*.mp4
+
+# Logs (manter estrutura, ignorar conteúdo)
+logs/**/*.npy
+logs/**/*.h5
+logs/**/*.png
+logs/**/*.json
+logs/**/*.csv
+logs/**/*.txt
+!logs/.gitkeep
+!logs/README.md
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 
 # Sistema
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs
-*.log
-logs/
+# Arquivos temporários
+*.tmp
+*.bak
+*.swp
+*~
 
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Arquivos de configuração local
+configs/local_config.py
+*.local

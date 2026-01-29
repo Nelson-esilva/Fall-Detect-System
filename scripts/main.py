@@ -2,12 +2,14 @@ import cv2
 import numpy as np
 import tensorflow as tf
 import os
+import sys
+from pathlib import Path
 
-# Configurações
-MODEL_PATH = 'models/fall_model_cnn_lstm.h5'
-IMG_HEIGHT, IMG_WIDTH = 224, 224
-SEQUENCE_LENGTH = 20
-CLASSES = ['Normal', 'Fall']
+# Adicionar diretórios ao path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from configs.config import MODEL_PATH, IMG_HEIGHT, IMG_WIDTH, SEQUENCE_LENGTH, CLASSES
 
 # Carregar Modelo
 if not os.path.exists(MODEL_PATH):
