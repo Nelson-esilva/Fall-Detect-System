@@ -163,7 +163,7 @@ npx expo start
 ### 6. Testar com simulação de queda
 ```bash
 # No terminal do PC (já existe no projeto!):
-python scripts/simulate_fall.py
+python3 scripts/simulate_fall.py
 ```
 
 ---
