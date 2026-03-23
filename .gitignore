@@ -22,10 +22,6 @@ models/*.tflite
 
 # Dados brutos (muito grandes para Git)
 UR_Fall_Downloads/
-data/raw/Fall/*.avi
-data/raw/Fall/*.mp4
-data/raw/Normal/*.avi
-data/raw/Normal/*.mp4
 
 # Logs (manter estrutura, ignorar conteúdo)
 logs/**/*.npy
