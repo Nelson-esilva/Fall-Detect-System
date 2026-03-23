@@ -11,7 +11,7 @@
 
 ## 1. Introdução
 
-Este relatório documenta a nova fase do projeto de Detecção de Quedas com IA: o desenvolvimento de um **aplicativo mobile para Android** capaz de receber alertas em tempo real quando o sistema detecta uma queda, emitindo alarmes sonoros e visuais no smartphone do cuidador ou familiar.
+Este relatório documenta a fase mobile do projeto de Detecção de Quedas com IA: o desenvolvimento de um **aplicativo mobile para Android** capaz de receber alertas em tempo real quando o sistema detecta uma queda, emitindo alarmes sonoros e visuais no smartphone do cuidador ou familiar.
 
 ### 1.1 Contexto
 
@@ -35,7 +35,7 @@ Desenvolver um aplicativo Android que:
 
 ### 2.1 Visão Geral
 
-A arquitetura integra o sistema existente (PC + ESP32) com o novo aplicativo mobile através de um broker MQTT centralizado.
+A arquitetura integra o sistema existente (PC + ESP32) com o aplicativo mobile através de um broker MQTT centralizado.
 
 ![Arquitetura do Sistema](images/arquitetura_sistema.png)
 
@@ -68,6 +68,7 @@ A arquitetura integra o sistema existente (PC + ESP32) com o novo aplicativo mob
 │  ┌──────────────────────────────────────────────────────┐       │
 │  │              BROKER MQTT (Mosquitto)                  │       │
 │  │      Tópico: fall_detection/alerts                    │       │
+│  │      Portas: 1883 (MQTT) + 9001 (WebSocket)          │       │
 │  └──────┬───────────────────────────────────┬───────────┘       │
 │         │                                   │                    │
 │         ▼                                   ▼                    │
@@ -88,15 +89,17 @@ O protocolo MQTT (Message Queuing Telemetry Transport) foi escolhido por:
 - **Padrão publish/subscribe**: permite múltiplos assinantes sem acoplamento
 - **Já implementado**: o backend Python e o ESP32 já suportam MQTT
 
+O app mobile conecta-se ao broker via **WebSocket** (porta 9001), pois o runtime JavaScript do React Native não suporta conexões TCP nativas. O Mosquitto foi configurado com dois listeners: MQTT puro na porta 1883 (para o Python e ESP32) e WebSocket na porta 9001 (para o app).
+
 **Formato da mensagem de alerta:**
 ```json
 {
   "alert": "FALL_DETECTED",
   "confidence": 0.95,
-  "timestamp": "2026-03-03T15:30:45.123456",
+  "timestamp": "2026-03-22T15:30:45.123456",
   "metadata": {
     "frame_id": 1234,
-    "camera_id": "cam01"
+    "model": "CNN-LSTM"
   }
 }
 ```
@@ -111,9 +114,9 @@ O protocolo MQTT (Message Queuing Telemetry Transport) foi escolhido por:
 
 | Camada | Tecnologia | Versão | Justificativa |
 |---|---|---|---|
-| **Frontend Mobile** | React Native | 0.76+ | Framework cross-platform mais popular, grande comunidade |
-| **Toolchain Mobile** | Expo | SDK 52+ | Simplifica build, deploy e testes — ideal para protótipos rápidos |
-| **Linguagem Mobile** | JavaScript/TypeScript | ES2022+ | Linguagem universal, baixa curva de aprendizado |
+| **Frontend Mobile** | React Native | 0.81.5 | Framework cross-platform mais popular, grande comunidade |
+| **Toolchain Mobile** | Expo | SDK 54 | Simplifica build, deploy e testes — ideal para protótipos rápidos |
+| **Linguagem Mobile** | TypeScript | 5.x | Tipagem estática para maior segurança no tratamento de payloads MQTT |
 | **Protocolo IoT** | MQTT | v3.1.1 | Leve, baixa latência, padrão pub/sub |
 | **Broker MQTT** | Eclipse Mosquitto | 2.x | Open source, leve, amplamente utilizado |
 | **Backend IA** | Python 3.10+ | — | Ecossistema maduro para ML/DL |
@@ -125,203 +128,224 @@ O protocolo MQTT (Message Queuing Telemetry Transport) foi escolhido por:
 
 | Pacote npm | Função |
 |---|---|
-| `mqtt` | Cliente MQTT para JavaScript — conexão com o broker |
-| `expo-av` | Reprodução de áudio (alarme sonoro) |
-| `expo-notifications` | Notificações push locais e remotas |
-| `expo-haptics` | Vibração do dispositivo |
+| `mqtt` (v5.x) | Cliente MQTT para JavaScript — conexão WebSocket com o broker |
+| `expo-av` | Reprodução de áudio (alarme sonoro em loop) |
+| `expo-haptics` | Vibração do dispositivo durante alarme |
+| `expo-notifications` | Notificações push locais |
 | `@react-navigation/native` | Navegação entre telas do app |
-| `@react-native-async-storage/async-storage` | Armazenamento local (histórico, configurações) |
+| `@react-navigation/bottom-tabs` | Barra de abas inferior (4 telas) |
+| `@react-native-async-storage/async-storage` | Persistência local (histórico de eventos, configurações) |
+| `@expo/vector-icons` | Ícones (Ionicons) para interface |
 
 ---
 
 ## 4. Design do Aplicativo
 
-### 4.1 Telas Planejadas
+### 4.1 Telas Implementadas
 
 ![Telas do App Mobile](images/telas_app_mobile.png)
 
 ### 4.2 Descrição das Telas
 
 #### Tela 1 — Dashboard (Tela Principal)
-- **Indicador de status** da conexão MQTT (conectado/desconectado)
+- **Indicador de status** da conexão MQTT (conectado/conectando/desconectado/erro)
+- **Botão Conectar/Desconectar** para controle manual da conexão MQTT
 - **Card do último evento** com timestamp e nível de confiança
-- **Contadores** de alertas do dia/semana
-- **Botão de teste** para verificar funcionamento do alarme
+- **Contadores** de alertas do dia e da semana
+- **Botão "Testar Alarme"** para verificar funcionamento sem depender do broker
 
 #### Tela 2 — Alarme de Queda
-- Ativada automaticamente quando uma queda é detectada
-- **Alarme sonoro** em volume máximo + **vibração contínua**
-- **Indicador de confiança** da detecção (ex: 95%)
-- **Botão "Confirmar Queda"** → registra evento e oferece ligar para emergência
-- **Botão "Falso Alarme"** → silencia e registra como falso positivo
+- **Modo inativo**: ícone de escudo verde com mensagem "Tudo Normal"
+- **Modo ativo** (ativado automaticamente ao receber FALL_DETECTED):
+  - Alarme sonoro em loop (tom alternado 880/660 Hz) + vibração contínua
+  - Indicador de confiança da detecção e timestamp
+  - **Botão "Confirmar Queda"** → registra evento como confirmado
+  - **Botão "Falso Alarme"** → silencia e registra como falso positivo
+  - **Botão "Ligar Emergência"** → discagem direta para o número configurado
+- Badge "!" na aba quando alarme está ativo
 
 #### Tela 3 — Histórico de Eventos
-- Lista cronológica de todos os alertas recebidos
-- Classificação: Queda Confirmada / Falso Alarme / Não Respondido
-- Informações: data, hora, nível de confiança, resposta do cuidador
+- Lista cronológica de todos os alertas recebidos (persistida via AsyncStorage)
+- **Filtros por tipo**: Todos, Confirmados, Falso Alarme, Pendentes, Testes
+- Classificação visual com ícones e cores por status
+- **Botão "Limpar"** para apagar todo o histórico
+- Informações por evento: data/hora, confiança, resposta do cuidador
 
 #### Tela 4 — Configurações
-- Endereço IP e porta do broker MQTT
-- Tópico MQTT para assinatura
-- Número de emergência para discagem rápida
-- Limiar de confiança para acionar alarme (padrão: 70%)
-- Volume e duração do alarme
+- **Conexão MQTT**: endereço IP do broker, porta WebSocket, tópico (campos travados enquanto conectado)
+- **Emergência**: número de telefone para discagem rápida
+- **Alarme**: limiar de confiança mínimo para acionar alarme (padrão: 70%)
+- **Notificações**: toggle para ativar/desativar notificações push
+- Todas as configurações são persistidas no AsyncStorage
 
 ---
 
-## 5. Cronograma de Desenvolvimento
+## 5. Implementação Realizada
+
+### 5.1 Estrutura do Projeto
+
+```
+mobile/FallDetectApp/
+├── App.tsx                          # Ponto de entrada, navegação bottom-tabs, AppProvider
+├── app.json                         # Configuração Expo
+├── package.json                     # Dependências npm
+├── tsconfig.json                    # Configuração TypeScript
+├── index.ts                         # Entry point Expo
+├── assets/
+│   └── alarm.wav                    # Som do alarme (3s, tom alternado 880/660 Hz)
+└── src/
+    ├── context/
+    │   └── AppContext.tsx            # Estado global (useReducer + Context API)
+    ├── services/
+    │   ├── MqttService.ts           # Conexão MQTT via WebSocket, subscribe, reconexão
+    │   ├── AlarmService.ts          # Reprodução de som em loop + vibração contínua
+    │   └── EventStorage.ts          # Persistência no AsyncStorage (eventos + configurações)
+    ├── screens/
+    │   ├── DashboardScreen.tsx      # Tela principal com status e estatísticas
+    │   ├── AlarmScreen.tsx          # Tela de alarme (modo inativo / modo ativo)
+    │   ├── HistoryScreen.tsx        # Histórico com filtros e botão limpar
+    │   └── SettingsScreen.tsx       # Configurações do broker e alarme
+    ├── components/
+    │   ├── StatusBadge.tsx          # Indicador visual de conexão MQTT
+    │   └── EventCard.tsx            # Card de evento para listas
+    ├── types/
+    │   └── index.ts                 # Tipos TypeScript (FallAlertPayload, FallEvent, AppSettings)
+    └── theme/
+        └── colors.ts                # Paleta de cores do dark theme
+```
+
+### 5.2 Arquitetura de Software do App
+
+O app utiliza a **Context API** do React com `useReducer` para gerenciamento de estado global. A arquitetura separa claramente as responsabilidades:
+
+```
+AppProvider (Context + Reducer)
+├── MqttService (singleton)      → Gerencia conexão WebSocket com o broker
+├── AlarmService (singleton)     → Controla som e vibração
+├── EventStorage (módulo)        → Lê/grava no AsyncStorage
+│
+└── Screens (consumers)
+    ├── Dashboard  → lê: mqttStatus, events     | chama: connect, disconnect, testAlarm
+    ├── Alarme     → lê: alarmActive, alert      | chama: confirmAlarm, dismissAlarm
+    ├── Histórico  → lê: events                  | chama: clearEvents
+    └── Configurações → lê: settings             | chama: updateSettings
+```
+
+**Actions do reducer:**
+| Action | Efeito |
+|---|---|
+| `MQTT_STATUS` | Atualiza status de conexão (connected/disconnected/connecting/error) |
+| `ALERT_RECEIVED` | Cria evento, ativa alarme, navega para aba Alarme |
+| `ALARM_CONFIRMED` | Para alarme, marca evento como "confirmado" |
+| `ALARM_DISMISSED` | Para alarme, marca evento como "falso alarme" |
+| `UPDATE_SETTINGS` | Atualiza configurações (persiste automaticamente) |
+| `LOAD_PERSISTED` | Carrega eventos e settings salvos ao iniciar o app |
+| `CLEAR_EVENTS` | Limpa todo o histórico |
+
+### 5.3 Fluxo de Recepção de Alerta
+
+1. `MqttService` recebe mensagem JSON no tópico `fall_detection/alerts`
+2. Valida se `alert` é `FALL_DETECTED` ou `TEST`
+3. Verifica se `confidence` ≥ limiar configurado (padrão: 70%)
+4. Dispara action `ALERT_RECEIVED` no reducer
+5. `AlarmService.start()` inicia som em loop + vibração a cada 800ms
+6. Navegação automática para a aba Alarme
+7. Badge "!" aparece na aba Alarme
+8. Evento é adicionado ao histórico e persistido no AsyncStorage
+9. Cuidador responde com "Confirmar Queda" ou "Falso Alarme"
+10. Alarme é silenciado e evento é classificado
+
+### 5.4 Configuração do Broker MQTT
+
+O Mosquitto foi configurado com dois listeners para suportar tanto o backend Python (MQTT puro) quanto o app mobile (WebSocket):
+
+```
+# /etc/mosquitto/conf.d/websocket.conf
+listener 1883
+allow_anonymous true
+
+listener 9001
+protocol websockets
+allow_anonymous true
+```
+
+---
+
+## 6. Cronograma de Desenvolvimento
 
 ![Cronograma de Desenvolvimento](images/cronograma_desenvolvimento.png)
 
-### 5.1 Detalhamento por Semana
+### 6.1 Progresso Atual
 
-| Semana | Fase | Atividades | Entregável |
-|---|---|---|---|
-| **1** | Configuração & Setup | Instalação do ambiente (Node.js, Expo); criação do projeto; configuração do Mosquitto; testes de conectividade MQTT | Projeto inicializado + broker MQTT funcionando |
-| **2** | Telas Principais | Desenvolvimento do Dashboard e tela de Configurações; implementação da navegação entre telas; design UI/UX dark theme | Telas navegáveis com design finalizado |
-| **3** | Integração MQTT | Implementação do cliente MQTT no app; conexão com broker; recepção de mensagens JSON; tratamento de reconexão automática | App recebendo alertas do PC em tempo real |
-| **4** | Alarme & Notificações | Implementação da tela de alarme com som e vibração; notificações push locais; botões de confirmação/descarte; discagem de emergência | Sistema de alarme completo e funcional |
-| **5** | Histórico & Persistência | Tela de histórico com armazenamento local; filtros de data; estatísticas de alertas; exportação de dados | Persistência de dados funcionando |
-| **6** | Testes & Ajustes | Testes integrados com sistema completo (PC + ESP32 + App); ajustes de UX; correção de bugs; documentação final | Versão beta pronta para demonstração |
-
-### 5.2 Marcos (Milestones)
-
-| Marco | Data Estimada | Critério de Aceite |
+| Etapa | Status | Descrição |
 |---|---|---|
-| **M1 — Setup Concluído** | Fim da Semana 1 | Projeto Expo criado, broker MQTT operacional |
-| **M2 — UI/UX Finalizada** | Fim da Semana 2 | Todas as telas implementadas e navegáveis |
-| **M3 — MQTT Integrado** | Fim da Semana 3 | App recebe alertas do PC via MQTT em tempo real |
-| **M4 — Alarme Funcional** | Fim da Semana 4 | Som, vibração e notificações funcionando |
-| **M5 — Versão Beta** | Fim da Semana 6 | Sistema completo testado e documentado |
+| **Etapa 1 — Setup & Esqueleto** | ✅ Concluída | Projeto Expo criado (SDK 54, TypeScript), dependências instaladas, navegação bottom-tabs, tema escuro, 4 telas estáticas |
+| **Etapa 2 — MQTT + Alarme** | ✅ Concluída | MqttService via WebSocket, AlarmService (som + vibração), AppContext com useReducer, navegação automática ao alarme, botões confirmar/descartar/emergência |
+| **Etapa 3 — Histórico + Persistência** | ✅ Concluída | EventStorage com AsyncStorage, eventos e configurações persistidos, filtros no histórico (5 categorias), botão limpar histórico |
+| **Etapa 4 — Notificações + Polish** | ⬜ Pendente | Notificações push em background, animações na tela de alarme, testes integrados com sistema completo |
+
+### 6.2 Marcos Atingidos
+
+| Marco | Status | Descrição |
+|---|---|---|
+| **M1 — Setup Concluído** | ✅ | Projeto Expo criado, broker MQTT operacional com WebSocket |
+| **M2 — UI/UX Finalizada** | ✅ | 4 telas implementadas com dark theme e navegação |
+| **M3 — MQTT Integrado** | ✅ | App recebe alertas do PC via MQTT em tempo real |
+| **M4 — Alarme Funcional** | ✅ | Som, vibração e navegação automática funcionando |
+| **M5 — Persistência** | ✅ | Histórico e configurações persistem entre sessões |
+| **M6 — Versão Beta** | ⬜ | Pendente: notificações em background e testes finais |
 
 ---
 
-## 6. Passo a Passo de Implementação
+## 7. Testes Realizados
 
-### Etapa 1 — Configuração do Ambiente
+### 7.1 Teste de Conexão MQTT
+- App conecta ao broker Mosquitto local via WebSocket (porta 9001)
+- Indicador de status reflete o estado real da conexão em tempo real
+- Reconexão automática quando a conexão é perdida
 
+### 7.2 Teste de Alarme via mosquitto_pub
 ```bash
-# 1. Verificar Node.js (já instalado: v20.20.0 ✅)
-node --version
-
-# 2. Criar projeto Expo na pasta mobile/
-cd Fall-Detect-System/mobile/
-npx create-expo-app FallDetectApp --template blank
-
-# 3. Instalar dependências do app
-cd FallDetectApp
-npx expo install expo-av expo-notifications expo-haptics
-npm install mqtt @react-navigation/native @react-navigation/native-stack
-npm install @react-native-async-storage/async-storage
-npm install react-native-screens react-native-safe-area-context
-```
-
-### Etapa 2 — Configuração do Broker MQTT
-
-```bash
-# Instalar Mosquitto no PC (Ubuntu/WSL)
-sudo apt update
-sudo apt install mosquitto mosquitto-clients
-
-# Habilitar e iniciar o serviço
-sudo systemctl enable mosquitto
-sudo systemctl start mosquitto
-
-# Configurar para aceitar conexões externas
-sudo nano /etc/mosquitto/conf.d/default.conf
-# Adicionar:
-#   listener 1883 0.0.0.0
-#   allow_anonymous true
-
-# Reiniciar
-sudo systemctl restart mosquitto
-
-# Testar publicação (em um terminal):
-mosquitto_sub -t "fall_detection/alerts" -v
-
-# Testar assinatura (em outro terminal):
-mosquitto_pub -t "fall_detection/alerts" -m '{"alert":"FALL_DETECTED","confidence":0.95,"timestamp":"2026-03-03T15:30:00"}'
-```
-
-### Etapa 3 — Estrutura do App
-
-```
-FallDetectApp/
-├── App.js                    # Ponto de entrada + navegação
-├── src/
-│   ├── screens/
-│   │   ├── DashboardScreen.js    # Tela principal
-│   │   ├── AlarmScreen.js        # Tela de alarme
-│   │   ├── HistoryScreen.js      # Histórico de eventos
-│   │   └── SettingsScreen.js     # Configurações
-│   ├── services/
-│   │   ├── MqttService.js        # Conexão e gerenciamento MQTT
-│   │   └── AlarmService.js       # Controle de alarme (som + vibração)
-│   ├── components/
-│   │   ├── StatusBadge.js        # Indicador de conexão
-│   │   ├── EventCard.js          # Card de evento
-│   │   └── AlarmButton.js        # Botões de ação do alarme
-│   ├── storage/
-│   │   └── EventStorage.js       # Persistência local
-│   └── theme/
-│       └── colors.js             # Paleta de cores (dark theme)
-├── assets/
-│   └── alarm_sound.mp3           # Som do alarme
-└── app.json                      # Configuração Expo
-```
-
-### Etapa 4 — Implementação Core (MQTT + Alarme)
-
-**Fluxo principal:**
-1. App inicia → conecta ao broker MQTT
-2. Assina o tópico `fall_detection/alerts`
-3. Quando recebe mensagem com `alert: "FALL_DETECTED"`:
-   - Navega para a tela de alarme
-   - Toca alarme sonoro em volume máximo
-   - Ativa vibração contínua
-   - Exibe informações do alerta (confiança, timestamp)
-4. Cuidador responde:
-   - "Confirmar Queda" → salva evento, oferece ligar emergência
-   - "Falso Alarme" → silencia, registra como falso positivo
-
-### Etapa 5 — Testes
-
-```bash
-# 1. Iniciar o app no celular (Expo Go)
-cd FallDetectApp
-npx expo start
-
-# 2. Simular uma queda via terminal
 mosquitto_pub -t "fall_detection/alerts" \
-  -m '{"alert":"FALL_DETECTED","confidence":0.92,"timestamp":"2026-03-03T15:30:00"}'
-
-# 3. Testar com o script existente do projeto
-python scripts/simulate_fall.py
-
-# 4. Teste integrado completo
-python scripts/main_with_esp32.py  # Detecção real + MQTT
+  -m '{"alert":"FALL_DETECTED","confidence":0.92,"timestamp":"2026-03-22T15:30:00","metadata":{"frame_id":42,"model":"CNN-LSTM"}}'
 ```
+- App navega automaticamente para aba Alarme
+- Som de alarme toca em loop + vibração contínua
+- Confiança (92%) e timestamp exibidos corretamente
+- Botões "Confirmar Queda" e "Falso Alarme" silenciam o alarme e classificam o evento
+
+### 7.3 Teste de Alarme Local
+- Botão "Testar Alarme" no Dashboard dispara alarme sem depender do broker
+- Evento registrado no histórico como tipo "teste"
+
+### 7.4 Teste de Persistência
+- Eventos e configurações permanecem após fechar e reabrir o app
+- Filtros no histórico funcionam corretamente
 
 ---
 
-## 7. Mudanças no Sistema Existente
+## 8. Mudanças no Sistema Existente
 
-### 7.1 Alterações Necessárias (Mínimas)
+### 8.1 Alterações Realizadas
 
-O sistema Python já suporta MQTT. As únicas mudanças necessárias são:
+| Arquivo/Componente | Mudança |
+|---|---|
+| Eclipse Mosquitto | Instalado e configurado com listener WebSocket na porta 9001 |
+
+### 8.2 Alterações Necessárias para Integração Completa
 
 | Arquivo | Mudança |
 |---|---|
-| `configs/config.py` | Alterar `ESP32_CONNECTION_TYPE` para `"mqtt"` e configurar IP do broker |
-| `mosquitto` | Instalar e configurar o broker MQTT no PC ou servidor |
+| `configs/config.py` | Alterar `ESP32_CONNECTION_TYPE` para `"mqtt"`, descomentar e configurar `ESP32_BROKER`, `ESP32_PORT` e `ESP32_TOPIC` |
+| `scripts/main_with_esp32.py` | Adicionar `ESP32_BROKER` e `ESP32_TOPIC` ao import de `configs.config` |
 
-**Nenhuma alteração** é necessária nos seguintes componentes:
+### 8.3 Componentes Sem Alteração
+
 - ✅ `src/model.py` — Modelo CNN+LSTM (sem mudanças)
 - ✅ `src/esp32_interface.py` — Já suporta MQTT (sem mudanças)
 - ✅ `hardware/esp32_fall_alert.ino` — Já suporta MQTT (só descomentar)
-- ✅ `scripts/main_with_esp32.py` — Funciona com MQTT automaticamente
 
-### 7.2 Compatibilidade
+### 8.4 Compatibilidade
 
 O app mobile **não substitui** o ESP32 — ambos funcionam em paralelo:
 - **ESP32**: alarme físico no ambiente (para a pessoa que caiu)
@@ -329,51 +353,53 @@ O app mobile **não substitui** o ESP32 — ambos funcionam em paralelo:
 
 ---
 
-## 8. Requisitos e Pré-requisitos
+## 9. Requisitos e Pré-requisitos
 
-### 8.1 Requisitos de Software
-- [x] Node.js 18+ (instalado: v20.20.0)
-- [x] npm 10+ (instalado: 10.8.2)
-- [ ] Expo CLI
-- [ ] Eclipse Mosquitto (broker MQTT)
-- [ ] App Expo Go no celular Android
+### 9.1 Requisitos de Software
+- [x] Node.js 18+ (instalado: v24.14.0)
+- [x] npm 11+ (instalado: 11.9.0)
+- [x] Expo SDK 54
+- [x] Eclipse Mosquitto com WebSocket habilitado
+- [x] App Expo Go (v54) no celular Android
 
-### 8.2 Requisitos de Hardware
+### 9.2 Requisitos de Hardware
 - PC com câmera (já existente)
 - Celular Android 6.0+ com Expo Go instalado
 - PC e celular na mesma rede WiFi
 
-### 8.3 Requisitos de Rede
+### 9.3 Requisitos de Rede
 - Porta 1883 (MQTT) liberada no firewall do PC
+- Porta 9001 (WebSocket) liberada no firewall do PC
 - Comunicação na rede local (mesmo WiFi)
 
 ---
 
-## 9. Riscos e Mitigações
+## 10. Riscos e Mitigações
 
-| Risco | Impacto | Mitigação |
-|---|---|---|
-| Latência na rede WiFi | Atraso no alarme mobile | Manter broker MQTT local; usar QoS 1 |
-| App em segundo plano (Android mata processos) | Alarme não toca | Implementar notificações push via Firebase (FCM) |
-| Perda de conexão MQTT | App para de receber alertas | Reconexão automática com backoff exponencial |
-| Falsos positivos do modelo | Alarmes desnecessários | Limiar de confiança configurável no app |
-| Firewall bloqueando MQTT | Conexão falha | Documentação de configuração de rede |
-
----
-
-## 10. Próximos Passos
-
-1. ✅ Relatório de atividades (este documento)
-2. ⬜ Inicializar projeto Expo na pasta `mobile/`
-3. ⬜ Configurar broker MQTT
-4. ⬜ Implementar telas do app
-5. ⬜ Integrar MQTT + alarme
-6. ⬜ Testes integrados com o sistema completo
-7. ⬜ Documentação final e demonstração
+| Risco | Impacto | Mitigação | Status |
+|---|---|---|---|
+| Latência na rede WiFi | Atraso no alarme mobile | Broker MQTT local; QoS 1 | ✅ Mitigado |
+| App em segundo plano (Android mata processos) | Alarme não toca | Implementar notificações push locais | ⬜ Pendente (Etapa 4) |
+| Perda de conexão MQTT | App para de receber alertas | Reconexão automática com período de 5s | ✅ Implementado |
+| Falsos positivos do modelo | Alarmes desnecessários | Limiar de confiança configurável no app (padrão: 70%) | ✅ Implementado |
+| Firewall bloqueando MQTT/WebSocket | Conexão falha | Documentação de configuração de rede | ✅ Documentado |
+| Perda de dados ao fechar app | Histórico perdido | AsyncStorage com persistência automática | ✅ Implementado |
 
 ---
 
-## 11. Referências
+## 11. Próximos Passos
+
+### Etapa 4 — Notificações em Background + Polish (Pendente)
+
+1. ⬜ **Notificações push locais** via `expo-notifications` quando o app está em segundo plano, garantindo que o cuidador seja alertado mesmo sem estar olhando o app
+2. ⬜ **Animação pulsante** na tela de alarme para maior impacto visual
+3. ⬜ **Testes integrados** com o sistema completo: `main_with_esp32.py` em modo MQTT → Mosquitto → App + ESP32 simultaneamente
+4. ⬜ **Ajuste do backend Python**: ativar MQTT no `configs/config.py` e corrigir import no `main_with_esp32.py`
+5. ⬜ **Build de produção**: gerar APK ou AAB para instalação direta no Android sem Expo Go
+
+---
+
+## 12. Referências
 
 - **UR Fall Detection Dataset**: Kwolek, B., & Kepski, M. (2014). Human fall detection on embedded platform using depth maps and wireless accelerometer. *Computer Methods and Programs in Biomedicine*, 117(3), 489-501.
 - **React Native**: https://reactnative.dev/
@@ -381,7 +407,8 @@ O app mobile **não substitui** o ESP32 — ambos funcionam em paralelo:
 - **Eclipse Mosquitto**: https://mosquitto.org/
 - **MQTT Protocol**: https://mqtt.org/
 - **MobileNetV2**: Sandler, M., et al. (2018). MobileNetV2: Inverted Residuals and Linear Bottlenecks. *CVPR*.
+- **mqtt.js**: https://github.com/mqttjs/MQTT.js
 
 ---
 
-*Documento gerado em Março/2026 como parte do Projeto PAIC/FAPEAM — UEA*
+*Documento atualizado em Março/2026 como parte do Projeto PAIC/FAPEAM — UEA*

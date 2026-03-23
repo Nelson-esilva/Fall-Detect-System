@@ -2,35 +2,15 @@
 
 ## Situação Atual do Projeto
 
-Seu sistema **Fall-Detect-System** já possui:
+O sistema **Fall-Detect-System** possui:
 - ✅ Modelo CNN+LSTM treinado para detectar quedas via vídeo
 - ✅ Comunicação com ESP32 via Serial/MQTT
 - ✅ Hardware Arduino (buzzer + LEDs) para alertas locais
-
-**O que falta:** um app mobile para receber os alertas e notificar cuidadores/familiares.
-
----
-
-## 🏗️ Abordagem Recomendada: React Native + Expo
-
-| Aspecto | Detalhe |
-|---|---|
-| **Framework** | React Native com Expo |
-| **Linguagem** | JavaScript/TypeScript |
-| **Plataformas** | Android + iOS com um único código |
-| **Comunicação** | MQTT (já suportado no seu backend) |
-| **Notificações** | Firebase Cloud Messaging (FCM) |
-| **Complexidade** | Baixa-Média |
-
-### Por que React Native + Expo?
-- **Rápido para prototipar** — ideal para projeto acadêmico/PAIC
-- **Um código → dois apps** (Android + iOS)
-- **Expo simplifica** build, deploy e testes no celular
-- **Enorme comunidade** e bibliotecas prontas
+- ✅ **App mobile funcional** para receber alertas e notificar cuidadores
 
 ---
 
-## 📐 Arquitetura Proposta
+## 📐 Arquitetura
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
@@ -38,8 +18,8 @@ Seu sistema **Fall-Detect-System** já possui:
 │  (Python)    │────►│   MQTT       │────►│  (React      │
 │  CNN+LSTM    │     │  (Mosquitto) │     │   Native)    │
 │  Detecção    │     │              │     │  Alarme!     │
-└──────────────┘     └──────────────┘     └──────────────┘
-                            │
+└──────────────┘     └──────┬───────┘     └──────────────┘
+                  porta 1883│ porta 9001 (WebSocket)
                      ┌──────┴──────┐
                      │   ESP32     │
                      │  (Buzzer +  │
@@ -48,152 +28,172 @@ Seu sistema **Fall-Detect-System** já possui:
 ```
 
 **Fluxo:**
-1. PC detecta queda via câmera → publica mensagem MQTT
-2. Broker MQTT distribui para todos os assinantes
-3. App mobile recebe e dispara alarme sonoro + notificação push
-4. ESP32 também recebe e dispara alarme local (já funciona)
+1. PC detecta queda via câmera → publica mensagem MQTT (porta 1883)
+2. Broker Mosquitto distribui para todos os assinantes
+3. App mobile recebe via WebSocket (porta 9001) → alarme sonoro + vibração
+4. ESP32 recebe via MQTT (porta 1883) → buzzer + LEDs
 
 ---
 
-## 🛠️ O Que Você Precisa
+## 🛠️ Stack Tecnológico
 
-### Software
-| Item | Para que serve |
-|---|---|
-| **Node.js 18+** | Runtime do React Native (✅ já instalado: v20.20.0) |
-| **Expo CLI** | `npm install -g expo-cli` |
-| **Expo Go** (app no celular) | Testar no celular sem build |
-| **Broker MQTT** | Mosquitto (no PC ou servidor) |
-
-### Dependências do App (npm)
-| Pacote | Função |
-|---|---|
-| `mqtt` | Conectar ao broker MQTT |
-| `expo-notifications` | Notificações push |
-| `expo-av` | Tocar alarme sonoro |
-| `@react-navigation/native` | Navegação entre telas |
-
-### Hardware/Infra
-- Celular Android ou iOS para testes
-- PC e celular na **mesma rede WiFi** (para MQTT local)
-- Opcionalmente: broker MQTT na nuvem (HiveMQ, CloudMQTT)
+| Componente | Tecnologia | Versão |
+|---|---|---|
+| **Framework** | React Native | 0.81.5 |
+| **Toolchain** | Expo | SDK 54 |
+| **Linguagem** | TypeScript | 5.x |
+| **Comunicação** | MQTT via WebSocket | mqtt.js 5.x |
+| **Broker** | Eclipse Mosquitto | 2.x |
 
 ---
 
-## 📋 Funcionalidades do App (MVP)
+## 📁 Estrutura do App
+
+```
+mobile/FallDetectApp/
+├── App.tsx                      # Entrada + navegação + AppProvider
+├── assets/
+│   └── alarm.wav                # Som do alarme (3s, 880/660 Hz)
+└── src/
+    ├── context/
+    │   └── AppContext.tsx        # Estado global (MQTT, alarme, eventos, settings)
+    ├── services/
+    │   ├── MqttService.ts       # Conexão WebSocket com broker Mosquitto
+    │   ├── AlarmService.ts      # Som em loop + vibração contínua
+    │   └── EventStorage.ts      # Persistência no AsyncStorage
+    ├── screens/
+    │   ├── DashboardScreen.tsx   # Status MQTT, estatísticas, botão teste
+    │   ├── AlarmScreen.tsx       # Alarme ativo/inativo, confirmar/descartar
+    │   ├── HistoryScreen.tsx     # Lista de eventos com filtros
+    │   └── SettingsScreen.tsx    # Configuração do broker e alarme
+    ├── components/
+    │   ├── StatusBadge.tsx       # Indicador de conexão
+    │   └── EventCard.tsx         # Card de evento
+    ├── types/
+    │   └── index.ts             # Tipos TypeScript
+    └── theme/
+        └── colors.ts            # Paleta dark theme
+```
+
+---
+
+## 📋 Funcionalidades Implementadas
 
 ### Tela 1 — Dashboard
-- Status da conexão MQTT (🟢 conectado / 🔴 desconectado)
-- Último evento detectado (timestamp + confiança)
-- Botão de teste de alarme
+- Status da conexão MQTT com indicador visual (verde/vermelho/amarelo)
+- Botão Conectar/Desconectar
+- Card do último evento com timestamp e confiança
+- Contadores de alertas (hoje / esta semana)
+- Botão "Testar Alarme" (dispara alarme local sem broker)
 
 ### Tela 2 — Alarme de Queda
-- **Alarme sonoro** alto (vibração + som)
-- Nível de confiança da detecção
-- Botões: "Confirmar Queda" / "Falso Alarme"
-- Botão "Ligar para Emergência" (discagem direta)
+- Ativação automática ao receber `FALL_DETECTED` via MQTT
+- Alarme sonoro em loop + vibração contínua
+- Confiança da detecção e timestamp
+- Botão "Confirmar Queda" → registra e oferece ligar emergência
+- Botão "Falso Alarme" → silencia e registra como falso positivo
+- Botão "Ligar Emergência" → discagem direta
+- Badge "!" na aba enquanto alarme ativo
 
 ### Tela 3 — Histórico
-- Lista de eventos com data/hora e confiança
-- Filtro por período
+- Lista cronológica persistida no AsyncStorage (até 200 eventos)
+- Filtros: Todos, Confirmados, Falso Alarme, Pendentes, Testes
+- Botão "Limpar" para apagar histórico
 
 ### Tela 4 — Configurações
-- Endereço do broker MQTT
+- Endereço do broker MQTT, porta WebSocket, tópico
 - Número de emergência
-- Volume do alarme
-- Limiar de confiança para alarme
+- Limiar de confiança para acionar alarme (padrão: 70%)
+- Toggle de notificações
+- Configurações persistidas no AsyncStorage
 
 ---
 
-## 🔧 Mudanças no Backend Python (Mínimas)
+## 🚀 Como Executar
 
-O código em `src/esp32_interface.py` já suporta MQTT! Basta:
+### 1. Instalar dependências
 
-1. **Instalar e configurar o Mosquitto** (broker MQTT) no PC:
-   ```bash
-   sudo apt install mosquitto mosquitto-clients
-   sudo systemctl enable mosquitto
-   sudo systemctl start mosquitto
-   ```
+```bash
+cd mobile/FallDetectApp
+npm install
+```
 
-2. **Atualizar** `configs/config.py`:
+### 2. Configurar o broker MQTT (Mosquitto)
+
+```bash
+# Instalar
+sudo apt install mosquitto mosquitto-clients
+
+# Configurar WebSocket
+sudo tee /etc/mosquitto/conf.d/websocket.conf > /dev/null << 'EOF'
+listener 1883
+allow_anonymous true
+
+listener 9001
+protocol websockets
+allow_anonymous true
+EOF
+
+# Reiniciar
+sudo systemctl restart mosquitto
+```
+
+### 3. Descobrir o IP do PC
+
+```bash
+hostname -I | awk '{print $1}'
+```
+
+### 4. Rodar o app no celular
+
+```bash
+npx expo start --lan
+# Escanear o QR code com o app Expo Go (v54) no celular
+```
+
+### 5. No app: Configurações → colocar o IP do PC → Dashboard → Conectar
+
+### 6. Testar com simulação de queda
+
+```bash
+# Simular uma queda via terminal:
+mosquitto_pub -t "fall_detection/alerts" \
+  -m '{"alert":"FALL_DETECTED","confidence":0.92,"timestamp":"2026-03-22T15:30:00","metadata":{"frame_id":42,"model":"CNN-LSTM"}}'
+
+# Ou usar o script existente do projeto (requer MQTT ativado no config.py):
+python3 scripts/simulate_fall.py
+```
+
+---
+
+## 🔧 Integração com o Backend Python
+
+O `src/esp32_interface.py` já suporta MQTT. Para ativar:
+
+1. Editar `configs/config.py`:
    ```python
    ESP32_CONNECTION_TYPE = "mqtt"
-   ESP32_BROKER = "192.168.x.x"  # IP do seu PC na rede local
+   ESP32_BROKER = "192.168.x.x"  # IP do PC na rede local
+   ESP32_PORT = 1883
    ESP32_TOPIC = "fall_detection/alerts"
+   ```
+
+2. Adicionar ao import em `scripts/main_with_esp32.py`:
+   ```python
+   from configs.config import (
+       MODEL_PATH, IMG_HEIGHT, IMG_WIDTH, SEQUENCE_LENGTH, CLASSES,
+       ESP32_CONNECTION_TYPE, ESP32_PORT, ESP32_BAUDRATE,
+       ESP32_BROKER, ESP32_TOPIC  # adicionar estas duas
+   )
    ```
 
 3. O app e o ESP32 assinam o mesmo tópico — ambos recebem o alerta simultaneamente.
 
 ---
 
-## 🚀 Passo a Passo para Começar
+## ⏭️ Próximos Passos (Etapa 4)
 
-### 1. Instalar Expo CLI
-```bash
-npm install -g expo-cli
-```
-
-### 2. Criar o App (dentro desta pasta `mobile/`)
-```bash
-cd mobile/
-npx create-expo-app FallDetectApp
-cd FallDetectApp
-```
-
-### 3. Instalar dependências
-```bash
-npx expo install expo-av expo-notifications
-npm install mqtt @react-navigation/native @react-navigation/native-stack
-```
-
-### 4. Configurar broker MQTT no PC
-```bash
-sudo apt install mosquitto mosquitto-clients
-# Testar publicação:
-mosquitto_pub -t "fall_detection/alerts" -m '{"alert":"FALL_DETECTED","confidence":0.95}'
-```
-
-### 5. Testar no celular
-```bash
-npx expo start
-# Escanear o QR code com o app Expo Go no celular
-```
-
-### 6. Testar com simulação de queda
-```bash
-# No terminal do PC (já existe no projeto!):
-python3 scripts/simulate_fall.py
-```
-
----
-
-## ⚡ Alternativas ao React Native
-
-| Framework | Prós | Contras |
-|---|---|---|
-| **Flutter** (Dart) | Performance excelente, UI bonita | Precisa aprender Dart |
-| **Kotlin/Swift nativo** | Máxima performance | Código separado para cada OS |
-| **PWA (Web App)** | Mais simples, sem instalação | Limitações em som/notificação de fundo |
-
-> **💡 Dica:** Para um projeto acadêmico/PAIC, **React Native + Expo** é a melhor relação custo-benefício.
-
----
-
-## 📁 Estrutura Final do Projeto
-
-```
-Fall-Detect-System/
-├── src/                    # Python - Modelo e interface ESP32
-├── scripts/                # Python - Scripts de detecção
-├── hardware/               # Arduino - Código do ESP32
-├── mobile/                 # ← NOVO
-│   ├── GUIA_APP_MOBILE.md  # Este guia
-│   └── FallDetectApp/      # App React Native (Expo)
-│       ├── App.js
-│       ├── package.json
-│       └── ...
-├── configs/                # Configurações Python
-├── models/                 # Modelos treinados
-└── README.md
-```
+1. Notificações push locais (`expo-notifications`) para alertar quando o app está em segundo plano
+2. Animações pulsantes na tela de alarme
+3. Testes integrados com o sistema completo (PC + ESP32 + App via MQTT)
+4. Build de produção (APK/AAB) para instalação sem Expo Go

@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useReducer, useRef, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useReducer, useRef, useEffect, useCallback, useState } from 'react';
 import { mqttService } from '../services/MqttService';
 import { alarmService } from '../services/AlarmService';
+import { EventStorage } from '../services/EventStorage';
 import type { AppSettings, FallAlertPayload, FallEvent, MqttConnectionStatus } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 
@@ -29,7 +30,9 @@ type Action =
   | { type: 'ALERT_RECEIVED'; payload: FallAlertPayload }
   | { type: 'ALARM_CONFIRMED' }
   | { type: 'ALARM_DISMISSED' }
-  | { type: 'UPDATE_SETTINGS'; patch: Partial<AppSettings> };
+  | { type: 'UPDATE_SETTINGS'; patch: Partial<AppSettings> }
+  | { type: 'LOAD_PERSISTED'; events: FallEvent[]; settings: AppSettings }
+  | { type: 'CLEAR_EVENTS' };
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -47,7 +50,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         alarmActive: true,
         currentAlert: action.payload,
-        events: [event, ...state.events].slice(0, 100),
+        events: [event, ...state.events].slice(0, 200),
       };
     }
 
@@ -68,6 +71,12 @@ function reducer(state: AppState, action: Action): AppState {
     case 'UPDATE_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.patch } };
 
+    case 'LOAD_PERSISTED':
+      return { ...state, events: action.events, settings: action.settings };
+
+    case 'CLEAR_EVENTS':
+      return { ...state, events: [] };
+
     default:
       return state;
   }
@@ -76,12 +85,14 @@ function reducer(state: AppState, action: Action): AppState {
 // --- Context ---
 
 interface AppContextValue extends AppState {
+  ready: boolean;
   connect: () => void;
   disconnect: () => void;
   confirmAlarm: () => void;
   dismissAlarm: () => void;
   testAlarm: () => void;
   updateSettings: (patch: Partial<AppSettings>) => void;
+  clearEvents: () => void;
   navigationRef: React.RefObject<any>;
 }
 
@@ -97,11 +108,45 @@ export function useApp(): AppContextValue {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const [ready, setReady] = useState(false);
   const settingsRef = useRef(state.settings);
   const navigationRef = useRef<any>(null);
 
   settingsRef.current = state.settings;
 
+  // Carregar dados persistidos ao iniciar
+  useEffect(() => {
+    (async () => {
+      const [events, settings] = await Promise.all([
+        EventStorage.loadEvents(),
+        EventStorage.loadSettings(),
+      ]);
+      dispatch({ type: 'LOAD_PERSISTED', events, settings });
+      setReady(true);
+    })();
+  }, []);
+
+  // Persistir eventos quando mudam
+  const prevEventsRef = useRef(state.events);
+  useEffect(() => {
+    if (!ready) return;
+    if (prevEventsRef.current !== state.events) {
+      prevEventsRef.current = state.events;
+      EventStorage.saveEvents(state.events);
+    }
+  }, [state.events, ready]);
+
+  // Persistir settings quando mudam
+  const prevSettingsRef = useRef(state.settings);
+  useEffect(() => {
+    if (!ready) return;
+    if (prevSettingsRef.current !== state.settings) {
+      prevSettingsRef.current = state.settings;
+      EventStorage.saveSettings(state.settings);
+    }
+  }, [state.settings, ready]);
+
+  // Configurar callbacks MQTT
   useEffect(() => {
     mqttService.onStatusChange((status) => {
       dispatch({ type: 'MQTT_STATUS', status });
@@ -112,7 +157,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (payload.confidence >= threshold) {
         dispatch({ type: 'ALERT_RECEIVED', payload });
         alarmService.start();
-        // Navegar automaticamente para a aba Alarme
         navigationRef.current?.navigate('Alarme');
       }
     });
@@ -153,16 +197,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'UPDATE_SETTINGS', patch });
   }, []);
 
+  const clearEvents = useCallback(() => {
+    dispatch({ type: 'CLEAR_EVENTS' });
+    EventStorage.clearEvents();
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
         ...state,
+        ready,
         connect,
         disconnect,
         confirmAlarm,
         dismissAlarm,
         testAlarm,
         updateSettings,
+        clearEvents,
         navigationRef,
       }}
     >
