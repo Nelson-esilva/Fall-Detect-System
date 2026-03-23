@@ -15,6 +15,7 @@ build/
 
 # Modelos treinados (muito grandes para Git)
 models/*.h5
+!models/fall_model_cnn_lstm.h5
 models/*.keras
 models/*.pb
 models/*.tflite
