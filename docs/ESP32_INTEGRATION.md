@@ -75,7 +75,7 @@ pip install pyserial paho-mqtt
 
 ### Passo 3: Configurar Python
 
-Edite `main_with_esp32.py` e ajuste as configurações:
+Edite `configs/config.py` e ajuste as configurações:
 
 ```python
 # Para Serial (USB)
@@ -92,7 +92,7 @@ ESP32_BAUDRATE = 115200
 ### Passo 4: Executar
 
 ```bash
-python main_with_esp32.py
+python scripts/main_with_esp32.py
 ```
 
 ## 🔧 Configuração MQTT (Opcional)
@@ -141,7 +141,7 @@ Execute o sistema e pressione **'t'** no teclado. Um alerta de teste será envia
 
 ### Teste 3: Detecção Real
 
-Execute `main_with_esp32.py` e simule uma queda. O sistema deve:
+Execute `scripts/main_with_esp32.py` e simule uma queda. O sistema deve:
 1. Detectar a queda
 2. Enviar alerta ao ESP32
 3. ESP32 disparar buzzer e LED
@@ -230,6 +230,12 @@ esp32.send_alert(confidence=0.90)
 - **Produção**: Use MQTT com autenticação
 - **WiFi**: Use WPA2 ou superior
 - **MQTT**: Configure usuário/senha no broker
+
+## 📱 Integração com App Mobile
+
+Com o modo MQTT ativo, o ESP32 e o aplicativo mobile recebem alertas simultaneamente pelo mesmo broker Mosquitto. O app se conecta via WebSocket (porta 9001) enquanto o ESP32 usa MQTT nativo (porta 1883).
+
+Para configurar o app mobile e o broker com WebSocket, veja o [Guia do App Mobile](../mobile/GUIA_APP_MOBILE.md).
 
 ## 📚 Referências
 

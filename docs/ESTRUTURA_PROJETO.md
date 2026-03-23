@@ -10,9 +10,10 @@ Fall-Detect-System/
 ├── 📂 src/                    # Código fonte principal (módulos reutilizáveis)
 ├── 📂 scripts/                # Scripts executáveis principais
 ├── 📂 hardware/               # Código para hardware (ESP32)
+├── 📂 mobile/                 # Aplicativo mobile (React Native + Expo)
 ├── 📂 tests/                  # Testes e validações
 ├── 📂 configs/                # Configurações centralizadas
-├── 📂 docs/                   # Documentação
+├── 📂 docs/                   # Documentação geral
 ├── 📂 assets/                 # Recursos visuais (imagens, diagramas)
 ├── 📂 data/                   # Dados de treinamento
 ├── 📂 models/                 # Modelos treinados
@@ -89,13 +90,39 @@ Configurações centralizadas do projeto.
 
 ---
 
+### `mobile/` - Aplicativo Mobile
+Aplicativo React Native (Expo SDK 54, TypeScript) para receber alertas de queda via MQTT e notificar o cuidador.
+
+```
+mobile/
+├── GUIA_APP_MOBILE.md              # Guia de setup e execução
+├── docs/
+│   ├── RELATORIO_FASE_MOBILE.md    # Relatório da fase mobile (PAIC)
+│   └── images/                     # Diagramas e mockups
+└── FallDetectApp/                  # Projeto Expo
+    ├── App.tsx                     # Entrada + navegação + provider
+    └── src/
+        ├── context/AppContext.tsx   # Estado global (useReducer)
+        ├── services/               # MqttService, AlarmService, EventStorage
+        ├── screens/                # Dashboard, Alarme, Histórico, Configurações
+        ├── components/             # StatusBadge, EventCard
+        ├── types/                  # Tipos TypeScript (payloads, eventos)
+        └── theme/                  # Paleta dark theme
+```
+
+**Funcionalidades:** conexão MQTT via WebSocket, alarme sonoro + vibração, histórico persistido no AsyncStorage, filtros por tipo, discagem de emergência, limiar de confiança configurável.
+
+**Uso:** `cd mobile/FallDetectApp && npm install && npx expo start --lan`
+
+---
+
 ### `docs/` - Documentação
-Documentação completa do projeto.
+Documentação geral do projeto.
 
 - **`ESP32_INTEGRATION.md`**: Guia completo de integração ESP32
 - **`ESTRUTURA_PROJETO.md`**: Este arquivo
+- **`Relatorio-Mes4-PAIC.md`**: Relatório mensal PAIC (implementação da arquitetura neural)
 - **`RESULTADOS_OBTIDOS.txt`**: Resultados do projeto
-- **`*.pdf`**: Relatórios e artigos de referência
 
 ---
 
@@ -231,8 +258,10 @@ Sempre use `configs/config.py` para configurações. Não hardcode valores.
 
 - [README Principal](../README.md)
 - [Integração ESP32](ESP32_INTEGRATION.md)
+- [Guia do App Mobile](../mobile/GUIA_APP_MOBILE.md)
+- [Relatório da Fase Mobile](../mobile/docs/RELATORIO_FASE_MOBILE.md)
 - [Logs de Performance](../logs/README.md)
 
 ---
 
-**Última atualização:** Janeiro 2025
+**Última atualização:** Março 2026
