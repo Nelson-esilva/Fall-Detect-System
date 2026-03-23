@@ -124,12 +124,12 @@ def save_eval_artifacts(model, X_test, y_test, run_dir: str):
 def save_run_metadata(run_dir: str, extra: dict):
     meta = {
         "timestamp": os.path.basename(run_dir).replace("run-", ""),
-        "data_dir": DATA_DIR,
+        "data_dir": str(DATA_DIR),
         "img_height": IMG_HEIGHT,
         "img_width": IMG_WIDTH,
         "sequence_length": SEQUENCE_LENGTH,
         "classes": CLASSES,
-        "model_path": MODEL_PATH,
+        "model_path": str(MODEL_PATH),
     }
     meta.update(extra or {})
     with open(os.path.join(run_dir, "run_metadata.json"), "w", encoding="utf-8") as f:
