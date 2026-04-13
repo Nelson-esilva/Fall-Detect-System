@@ -9,6 +9,7 @@ def build_cnn_lstm_model(
     img_width: int = 128,
     fine_tune_layers: int = 0,
     learning_rate: float = 1e-4,
+    lstm_units: int = 64,
 ):
     """
     Arquitetura híbrida CNN-LSTM para detecção de quedas.
@@ -19,6 +20,7 @@ def build_cnn_lstm_model(
         fine_tune_layers: quantas camadas finais da MobileNetV2 descongelar
                           (0 = transfer learning puro, 30 = bom equilíbrio)
         learning_rate: taxa de aprendizado (usar valor menor quando fine-tuning)
+        lstm_units: número de unidades na camada LSTM
     """
     input_shape = (sequence_length, img_height, img_width, 3)
     inputs = keras.Input(shape=input_shape)
@@ -38,7 +40,51 @@ def build_cnn_lstm_model(
     cnn_output = layers.TimeDistributed(base_model)(inputs)
     cnn_output = layers.TimeDistributed(layers.GlobalAveragePooling2D())(cnn_output)
 
-    x = layers.LSTM(64, return_sequences=False)(cnn_output)
+    x = layers.LSTM(lstm_units, return_sequences=False)(cnn_output)
+    x = layers.Dropout(0.5)(x)
+    outputs = layers.Dense(1, activation='sigmoid')(x)
+
+    model = keras.Model(inputs, outputs)
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+        loss='binary_crossentropy',
+        metrics=['accuracy'],
+    )
+
+    return model
+
+
+def build_cnn_only_model(
+    sequence_length: int = 20,
+    img_height: int = 128,
+    img_width: int = 128,
+    fine_tune_layers: int = 0,
+    learning_rate: float = 1e-4,
+):
+    """
+    Baseline CNN-only: processa cada frame independentemente com MobileNetV2,
+    faz pooling temporal (média) e classifica. Sem componente temporal (LSTM).
+    Serve para demonstrar o valor da modelagem temporal.
+    """
+    input_shape = (sequence_length, img_height, img_width, 3)
+    inputs = keras.Input(shape=input_shape)
+
+    base_model = keras.applications.MobileNetV2(
+        include_top=False,
+        weights='imagenet',
+        input_shape=(img_height, img_width, 3),
+    )
+
+    base_model.trainable = False
+    if fine_tune_layers > 0:
+        base_model.trainable = True
+        for layer in base_model.layers[:-fine_tune_layers]:
+            layer.trainable = False
+
+    cnn_output = layers.TimeDistributed(base_model)(inputs)
+    cnn_output = layers.TimeDistributed(layers.GlobalAveragePooling2D())(cnn_output)
+
+    x = layers.GlobalAveragePooling1D()(cnn_output)
     x = layers.Dropout(0.5)(x)
     outputs = layers.Dense(1, activation='sigmoid')(x)
 

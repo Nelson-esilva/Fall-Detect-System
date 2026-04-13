@@ -1,0 +1,374 @@
+% Conteudo para Overleaf:
+% Inclua no seu main.tex com: \input{docs/estudo.tex}
+%
+% Obs.: texto em formato LaTeX (secoes e subsecoes) para estudo teorico.
+
+\section{Estudo - Tecnologias e Conceitos do Projeto}
+
+\subsection{Visao Geral}
+Este projeto implementa um \textbf{sistema de deteccao de quedas} baseado em aprendizado profundo e visao computacional, com integracao de notificacoes via \textbf{ESP32} (hardware) e \textbf{aplicativo mobile} (React Native/Expo). A arquitetura ponta a ponta envolve:
+captura de video por camara, processamento em janelas temporais, inferencia com uma rede \textbf{CNN+LSTM}, e distribuicao de alertas usando \textbf{MQTT} (com broker Mosquitto) para acionamento local (buzzer/LEDs) e remoto (celular).
+
+\subsection{Objetivos do Estudo}
+Compreender e relacionar:
+\begin{itemize}
+  \item Tecnicas de \textbf{deep learning} para classificacao de eventos em video.
+  \item Processamento de video com \textbf{OpenCV} e preparo de dados (ETL).
+  \item Padroes de rede neural: \textbf{MobileNetV2}, \textbf{TimeDistributed}, \textbf{LSTM} e classificacao binaria.
+  \item Treinamento supervisionado: hiperparametros, callbacks e regularizacao.
+  \item Avaliacao estatistica: matriz de confusao, precision, recall e F1-score.
+  \item Inferencia e otimizacao para \textbf{CPU} com \textbf{TFLite} e quantizacao.
+  \item Integracao IoT: \textbf{ESP32}, comunicacao \textbf{Serial/UART}, \textbf{MQTT} e mensageria em JSON.
+  \item App mobile: \textbf{React Native}, \textbf{Expo}, WebSocket para MQTT e persistencia local com AsyncStorage.
+  \item Reprodutibilidade: logs de treinamento e controle de artefatos.
+\end{itemize}
+
+\subsection{Stack Tecnologico (Resumo)}
+\begin{itemize}
+  \item \textbf{Backend IA e Visao Computacional:} Python, TensorFlow/Keras, OpenCV, NumPy, scikit-learn.
+  \item \textbf{Treinamento e Avaliacao:} tf.data, callbacks (EarlyStopping, ReduceLROnPlateau, ModelCheckpoint), matplotlib.
+  \item \textbf{Inferencia Otimizada:} TFLite com quantizacao INT8 (quando disponivel).
+  \item \textbf{IoT:} ESP32 (Arduino), Serial (UART) via pyserial e MQTT via paho-mqtt.
+  \item \textbf{Broker:} Eclipse Mosquitto com listener MQTT (1883) e WebSocket (9001) para o app.
+  \item \textbf{App Mobile:} React Native + Expo + TypeScript.
+  \item \textbf{Persistencia e Media:} AsyncStorage (historico/config), audio em loop e vibra (haptics) via bibliotecas do Expo.
+\end{itemize}
+
+\section{Tema Central: Deteccao de Quedas em Video}
+
+\subsection{Por que Video e Tempo Importam}
+Quedas sao eventos dinamicos: nao se resumem a uma postura unica. Por isso, e necessario modelar a \textbf{evolucao temporal} do movimento. Em vez de classificar frames isolados, o sistema trabalha com \textbf{sequencias} (janelas temporais) de frames.
+
+\subsection{Abordagem de Classificacao Binaria}
+O problema e formulado como classificacao binaria:
+\begin{itemize}
+  \item \textbf{Normal} (0)
+  \item \textbf{Fall} (1)
+\end{itemize}
+A rede produz um valor no intervalo $[0,1]$ via ativacao \textbf{sigmoid}, interpretado como probabilidade da classe Fall.
+
+\section{Modelos de Deep Learning: CNN+LSTM}
+
+\subsection{Conceito de CNN (Convolutional Neural Network)}
+CNNs extraem caracteristicas espaciais relevantes (bordas, texturas e padrões visuais). Em classificacao de imagens, uma CNN mapeia uma entrada de dimensoes $H \times W \times C$ para uma representacao vetorial.
+
+\subsection{Transfer Learning com MobileNetV2}
+O projeto utiliza \textbf{MobileNetV2} como extrator de caracteristicas por:
+\begin{itemize}
+  \item eficiencia computacional (arquiteturas de mobile para menor latencia);
+  \item uso de pesos pre-treinados no ImageNet (transfer learning).
+\end{itemize}
+Transfer learning significa congelar a base inicialmente (ou em parte) para reduzir tempo e necessidade de dados rotulados.
+
+\subsection{TimeDistributed e Processamento de Sequencias}
+Para cada sequencia de $T=20$ frames, a CNN e aplicada individualmente a cada frame. A camada \textbf{TimeDistributed} replica a operacao da CNN ao longo do eixo temporal:
+\begin{itemize}
+  \item entrada: $(T, H, W, C)$ por amostra;
+  \item saida: vetores de caracteristicas por frame (para alimentacao temporal).
+\end{itemize}
+
+\subsection{LSTM (Long Short-Term Memory)}
+A LSTM modela dependencia temporal e aprendizados de como caracteristicas mudam ao longo do tempo. O componente LSTM tende a lidar com informacoes de longo prazo atraves de \textbf{portas de controle} (input/forget/output) e estados internos.
+
+\subsection{Regularizacao (Dropout)}
+O modelo aplica \textbf{Dropout} na camada de saida da LSTM para reduzir overfitting. Em geral, Dropout desativa aleatoriamente parte das unidades durante o treinamento, forçando o modelo a aprender representacoes mais robustas.
+
+\subsection{Funcao de Perda e Otimizador}
+O projeto utiliza:
+\begin{itemize}
+  \item \textbf{Loss:} binary crossentropy (adequada a classificacao binaria);
+  \item \textbf{Otimizador:} Adam com learning rate configurado.
+\end{itemize}
+
+\section{Preparacao de Dados (ETL) para Video}
+
+\subsection{Dataset UR Fall Detection}
+O dataset usado contem:
+\begin{itemize}
+  \item sequencias de quedas simuladas (Fall);
+  \item atividades diarias (ADL/Normal).
+\end{itemize}
+O sistema assume que videos podem ser organizados por pastas/classe.
+
+\subsection{Pipeline de Pre-processamento}
+O fluxo de preparo de dados envolve:
+\begin{itemize}
+  \item identificar arquivos por busca recursiva;
+  \item extrair frames ou converter sequencias para um formato de video padronizado;
+  \item redimensionar imagens para o tamanho exigido pelo modelo;
+  \item normalizar valores (ex.: escala para $[0,1]$);
+  \item construir amostras via \textbf{sliding window} (janelas temporais sobre o video).
+\end{itemize}
+
+\subsection{Sliding Window e Passo Temporal}
+O sliding window cria varias amostras a partir de um unico video. O passo temporal (stride) controla a sobreposicao entre janelas:
+\begin{itemize}
+  \item stride menor => mais amostras, maior custo computacional;
+  \item stride maior => menos amostras, potencialmente menos cobertura temporal.
+\end{itemize}
+
+\subsection{Data Augmentation}
+Para melhorar generalizacao, o projeto aplica aumentos aleatorios em tempo real em sequencias, como:
+\begin{itemize}
+  \item flip horizontal;
+  \item variacao de brilho.
+\end{itemize}
+Essa etapa reduz overfitting e melhora robustez para variacoes do ambiente.
+
+\subsection{Split Estratificado (Treino/Teste)}
+A separacao treino/teste e estratificada para preservar proporcao de classes em cada subconjunto. Isso evita que o modelo seja treinado com uma distribuicao distorcida.
+
+\section{Treinamento do Modelo}
+
+\subsection{Hiperparametros}
+Aspectos estudaveis incluem:
+\begin{itemize}
+  \item numero de epocas;
+  \item batch size;
+  \item learning rate;
+  \item tamanho da sequencia (T=20);
+  \item dimensao de entrada (H=W=128).
+\end{itemize}
+
+\subsection{tf.data e Eficiência}
+O uso de tf.data ajuda a:
+\begin{itemize}
+  \item prefetch e pipelining de dados;
+  \item reduz overhead de carregamento;
+  \item suportar augmentation em tempo real.
+\end{itemize}
+
+\subsection{Callbacks}
+Callbacks implementados:
+\begin{itemize}
+  \item \textbf{ModelCheckpoint:} salva o melhor modelo conforme val\_accuracy;
+  \item \textbf{EarlyStopping:} interrompe treinamento quando val\_loss para de melhorar;
+  \item \textbf{ReduceLROnPlateau:} reduz learning rate quando val\_loss estagna.
+\end{itemize}
+
+\subsection{Mixed Precision (Opcional)}
+Quando habilitado, mixed precision acelera treinamento em hardware compatível, reduzindo memoria e aumentando throughput. No projeto, o modo esta configurado como desativado por padrao.
+
+\section{Avaliacao: Metrics e Analise de Erros}
+
+\subsection{Accuracy e Loss}
+Accuracy mede a proporcao de amostras corretamente classificadas. Loss quantifica o erro durante treinamento e avaliacao, sendo util para observar convergencia.
+
+\subsection{Precision, Recall e F1-score}
+Precision (para a classe prevista) e Recall (para a classe real) sao essenciais em cenarios desbalanceados. F1-score combina ambos em uma unica medida.
+
+\subsection{Matriz de Confusao}
+A matriz de confusao $C$ resume:
+\begin{itemize}
+  \item True Positives (acertos de Fall);
+  \item True Negatives (acertos de Normal);
+  \item False Positives (Normal previsto como Fall);
+  \item False Negatives (Fall previsto como Normal).
+\end{itemize}
+Ela e a principal fonte visual de entendimento de erros.
+
+\subsection{Leitura dos Graficos}
+Os graficos de curves.png mostram:
+\begin{itemize}
+  \item train loss vs val loss;
+  \item train accuracy vs val accuracy.
+\end{itemize}
+Quando val e train evoluem de forma semelhante, tende a indicar boa generalizacao (sem overfitting significativo).
+
+\section{Inferencia em Tempo Real e Otimizacao}
+
+\subsection{Buffer Circular de Sequencias}
+Durante inferencia, o sistema acumula frames em um buffer ate completar T=20. A cada passo de inferencia, a janela atual e processada.
+
+\subsection{Skip Frames}
+O uso de inferencia a cada N frames (skip frames) reduz custo computacional e viabiliza execucao em CPU.
+
+\subsection{Limiar e Confirmacao Temporal}
+Para reduzir falsos positivos temporais, aplica-se:
+\begin{itemize}
+  \item um limiar mais conservador para considerar Fall;
+  \item confirmacao temporal: so dispara Fall apos N predições consecutivas.
+\end{itemize}
+
+\subsection{TFLite e Quantizacao INT8}
+O modelo e convertido para TFLite para desempenho. Quantizacao INT8 reduz tamanho e acelera em CPU, com possivel impacto na precisao (avaliar sempre).
+
+\section{Visao Computacional com OpenCV}
+
+\subsection{Captura de Video}
+OpenCV utiliza VideoCapture para:
+\begin{itemize}
+  \item acessar webcam (indice 0);
+  \item acessar arquivo de video (caminho do arquivo).
+\end{itemize}
+
+\subsection{Redimensionamento e Normalizacao}
+A entrada do modelo precisa ser padronizada:
+\begin{itemize}
+  \item resize para HxW;
+  \item conversao para float32 e normalizacao para [0,1];
+  \item empilhamento temporal em formato correto para a rede.
+\end{itemize}
+
+\subsection{Visualizacao}
+O sistema usa overlays com texto e paines para:
+\begin{itemize}
+  \item visualizar status do buffer;
+  \item mostrar classe prevista e confianca;
+  \item exibir alerta quando Fall for confirmado.
+\end{itemize}
+
+\section{Integração IoT: ESP32, Serial e MQTT}
+
+\subsection{ESP32 e Arduino Framework}
+O ESP32 executa firmware com:
+\begin{itemize}
+  \item controle de GPIO para buzzer e LEDs;
+  \item recebimento de mensagem de alerta para ativar o alarme local.
+\end{itemize}
+
+\subsection{Comunicacao Serial (UART)}
+Serial e recomendada para testes:
+\begin{itemize}
+  \item simples de configurar;
+  \item nao exige WiFi;
+  \item limita distancia e depende do cabo.
+\end{itemize}
+No contexto do projeto, usa-se configuracao de porta COM e baudrate.
+
+\subsection{Comunicacao MQTT}
+MQTT e um protocolo de mensageria publish/subscribe:
+\begin{itemize}
+  \item produtores publicam mensagens em um topico;
+  \item assinantes recebem mensagens de um topico.
+\end{itemize}
+No projeto, o topico usado e ``fall\_detection/alerts''.
+
+\subsection{Broker Mosquitto e WebSocket}
+O Mosquitto e configurado com:
+\begin{itemize}
+  \item listener MQTT em 1883;
+  \item listener WebSocket em 9001 para permitir conexao do cliente do app.
+\end{itemize}
+
+\subsection{Formato de Mensagem em JSON}
+O payload do alerta e JSON. Conceitos importantes:
+\begin{itemize}
+  \item campos de controle: alert, confidence, timestamp;
+  \item metadata opcional: frame\_id, model, etc.
+\end{itemize}
+Essa estrutura facilita interpretacao e depuracao, e permite evolucao do sistema sem quebrar compatibilidade.
+
+\subsection{Estratégias de Robustez}
+O estudo deve cobrir:
+\begin{itemize}
+  \item reconexao ao broker;
+  \item tratamento de falhas (timeouts, portas incorretas, firewall);
+  \item seguranca (quando usar MQTT com autenticação).
+\end{itemize}
+
+\section{App Mobile: React Native + Expo + MQTT over WebSocket}
+
+\subsection{Por que WebSocket para MQTT no App}
+Em ambiente JavaScript do React Native, conexoes TCP diretas nem sempre sao praticas. Assim, usa-se MQTT sobre WebSocket (WebSocket listener no broker) para permitir conectividade pelo ambiente mobile.
+
+\subsection{Expo e Expo Go}
+Expo simplifica:
+\begin{itemize}
+  \item configuracao do projeto;
+  \item execucao no celular via Expo Go;
+  \item acesso a API para audio, vibração e armazenamento.
+\end{itemize}
+
+\subsection{Gerenciamento de Estado com Context API}
+O App utiliza Context API e useReducer para organizar:
+\begin{itemize}
+  \item estado de conexao MQTT;
+  \item estado do alarme (ativo/inativo);
+  \item eventos recebidos e persistidos.
+\end{itemize}
+
+\subsection{Servicos (Services)}
+Arquitetura separa:
+\begin{itemize}
+  \item MqttService: conexao e subscribe no topico;
+  \item AlarmService: som em loop e vibracao;
+  \item EventStorage: persistencia no AsyncStorage.
+\end{itemize}
+
+\subsection{Fluxo do Alerta no App}
+Fluxo conceitual:
+\begin{enumerate}
+  \item App recebe mensagem MQTT (JSON).
+  \item Valida campo ``alert'' e ``confidence'' vs limiar.
+  \item Aciona tela e inicia o alarme (som e vibração).
+  \item Permite ao cuidador confirmar ou registrar falso alarme.
+  \item Mantem historico persistido e filtro por tipo.
+\end{enumerate}
+
+\subsection{Historico e AsyncStorage}
+AsyncStorage permite persistir eventos/configs localmente no dispositivo. Conceito central:
+\begin{itemize}
+  \item persistencia entre sessoes;
+  \item consulta e filtros por tipo;
+  \item limite de tamanho do historico (ex.: ate 200 eventos).
+\end{itemize}
+
+\section{Reprodutibilidade: Logs e Artefatos}
+
+\subsection{Estrutura de Logs do Treinamento}
+Cada treino gera uma pasta run-YYYYMMDD-HHMMSS/ contendo:
+\begin{itemize}
+  \item run\_metadata.json: hiperparametros e configuracoes;
+  \item history.json / history.csv: evolucao por epoca;
+  \item curves.png: graficos de perda e acuracia;
+  \item classification\_report.txt: precision/recall/F1 por classe;
+  \item confusion\_matrix.png: matriz visual;
+  \item final\_metrics.json: loss e accuracy finais.
+\end{itemize}
+
+\subsection{Versionamento de Artefatos}
+Boas praticas:
+\begin{itemize}
+  \item versionar artefatos leves (JSON/CSV/TXT/PNG);
+  \item evitar versionar arquivos grandes (.h5 e dados brutos) ou usar Git LFS (se necessario).
+\end{itemize}
+
+\section{Limitações e Consideracoes de Ciencia do Mundo Real}
+
+\subsection{Generalizacao}
+Resultados excelentes no conjunto de teste podem nao refletir desempenho em:
+\begin{itemize}
+  \item outros ambientes/cameras;
+  \item mudancas de iluminacao;
+  \item posicoes e alturas distintas;
+  \item variacoes de vestimenta e movimento.
+\end{itemize}
+
+\subsection{Falsos Positivos Temporais}
+Deteccoes antecipadas podem ocorrer em transicoes de movimento. A mitigacao usa:
+\begin{itemize}
+  \item limiar de confidence mais alto;
+  \item confirmacao por varias predições consecutivas.
+\end{itemize}
+
+\subsection{Performance}
+Em hardware limitado:
+\begin{itemize}
+  \item usar TFLite/INT8;
+  \item skip frames e buffer reduzido;
+  \item evitar render pesado em loops (otimizar visualizacao).
+\end{itemize}
+
+\section{Referencias (para voce citar no Overleaf)}
+Sugestoes de referencias utilizadas no contexto do projeto:
+\begin{thebibliography}{9}
+  \bibitem{kwolek2014} Kwolek, B.; Kepski, M. Human fall detection on embedded platform using depth maps and wireless accelerometer. Computer Methods and Programs in Biomedicine, 117(3), 489--501, 2014.
+  \bibitem{mobnetv2} Sandler, M. et al. MobileNetV2: Inverted Residuals and Linear Bottlenecks. CVPR, 2018.
+  \bibitem{lstm} Hochreiter, S.; Schmidhuber, J. Long Short-Term Memory. Neural Computation, 1997.
+  \bibitem{lu2019} Lu, N. et al. Deep Learning for Fall Detection: Three-Dimensional CNN Combined With LSTM on Video Kinematic Data. IEEE JBHI, 2019.
+  \bibitem{mubashir2013} Mubashir, M.; Shao, L.; Seed, L. A survey on fall detection: Principles and approaches. Neurocomputing, 2013.
+  \bibitem{mqtt} MQTT.org. MQTT v3.1.1 Specification. (Documentacao oficial do protocolo).
+  \bibitem{mosquitto} Eclipse Mosquitto. Documentacao e referencia do broker.
+\end{thebibliography}
+

@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import tensorflow as tf
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from sklearn.metrics import confusion_matrix, classification_report
 import json
 import csv
@@ -168,11 +168,13 @@ def extract_sequences_from_video(video_path: str, label: int):
 
 def build_dataset():
     """
-    Carrega vídeos e retorna arrays numpy de sequências.
-    Usa float32 com resolução configurável para reduzir uso de RAM.
+    Carrega vídeos e retorna arrays numpy de sequências, labels e IDs de vídeo.
+    O video_id permite fazer split por vídeo (evita data leakage).
     """
     all_sequences = []
     all_labels = []
+    all_video_ids = []
+    video_counter = 0
 
     print("=" * 50)
     print("CARREGANDO DATASET")
@@ -184,7 +186,7 @@ def build_dataset():
             print(f"AVISO: Pasta '{class_dir}' não encontrada!")
             continue
 
-        files = [f for f in os.listdir(class_dir) if f.endswith(('.avi', '.mp4'))]
+        files = sorted(f for f in os.listdir(class_dir) if f.endswith(('.avi', '.mp4')))
         print(f"\nClasse '{class_name}': {len(files)} vídeos encontrados")
 
         if not files:
@@ -199,14 +201,20 @@ def build_dataset():
             if sequences:
                 all_sequences.extend(sequences)
                 all_labels.extend([label] * len(sequences))
-                print(f"   {name}: {n_frames} frames -> {len(sequences)} amostras")
+                all_video_ids.extend([video_counter] * len(sequences))
+                print(f"   {name}: {n_frames} frames -> {len(sequences)} amostras (video_id={video_counter})")
             else:
                 print(f"   {name}: {n_frames} frames (insuficiente, mínimo: {SEQUENCE_LENGTH})")
+            video_counter += 1
 
     if not all_sequences:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([])
 
-    return np.array(all_sequences, dtype=np.float32), np.array(all_labels)
+    return (
+        np.array(all_sequences, dtype=np.float32),
+        np.array(all_labels),
+        np.array(all_video_ids),
+    )
 
 
 def create_augmented_dataset(X, y, batch_size):
@@ -246,17 +254,52 @@ def create_augmented_dataset(X, y, batch_size):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    X, y = build_dataset()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Treinamento do modelo de detecção de quedas")
+    parser.add_argument("--model", type=str, default="cnn_lstm",
+                        choices=["cnn_lstm", "cnn_only", "cnn_lstm_frozen"],
+                        help="Arquitetura do modelo (default: cnn_lstm)")
+    parser.add_argument("--fine-tune-layers", type=int, default=None,
+                        help="Override de camadas a descongelar (default: config.py)")
+    parser.add_argument("--lstm-units", type=int, default=64,
+                        help="Unidades da LSTM (default: 64)")
+    parser.add_argument("--no-augmentation", action="store_true",
+                        help="Desativar data augmentation")
+    parser.add_argument("--img-size", type=int, default=None,
+                        help="Override da resolução (ex: 224)")
+    parser.add_argument("--split", type=str, default="video",
+                        choices=["video", "window"],
+                        help="Estratégia de split: 'video' (sem leakage) ou 'window' (legacy)")
+    parser.add_argument("--tag", type=str, default="",
+                        help="Tag descritiva para o run (salva nos metadados)")
+    args = parser.parse_args()
+
+    img_h = args.img_size or IMG_HEIGHT
+    img_w = args.img_size or IMG_WIDTH
+    ft_layers = args.fine_tune_layers if args.fine_tune_layers is not None else FINE_TUNE_LAYERS
+
+    X, y, video_ids = build_dataset()
 
     run_dir = make_run_dir()
+
+    n_videos = len(np.unique(video_ids)) if len(video_ids) > 0 else 0
     save_run_metadata(
         run_dir,
         extra={
             "n_samples": int(len(X)),
+            "n_videos": n_videos,
             "class_distribution": (
                 {CLASSES[int(k)]: int(v) for k, v in zip(*np.unique(y, return_counts=True))}
                 if len(y) > 0 else {}
             ),
+            "model_type": args.model,
+            "split_strategy": args.split,
+            "augmentation": not args.no_augmentation,
+            "lstm_units": args.lstm_units,
+            "img_size": img_h,
+            "fine_tune_layers_actual": ft_layers,
+            "tag": args.tag,
         },
     )
 
@@ -264,6 +307,7 @@ if __name__ == "__main__":
     print("RESUMO DO DATASET")
     print("=" * 50)
     print(f"Total de amostras: {len(X)}")
+    print(f"Total de vídeos: {n_videos}")
     ram_mb = X.nbytes / (1024 * 1024) if len(X) > 0 else 0
     print(f"Uso de RAM estimado (dados): {ram_mb:.0f} MB")
 
@@ -285,14 +329,43 @@ if __name__ == "__main__":
         exit(1)
 
     # Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    print(f"\nTreino: {len(X_train)} amostras")
+    if args.split == "video":
+        print(f"\nSplit por VÍDEO (GroupShuffleSplit) — sem data leakage")
+        gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(gss.split(X, y, groups=video_ids))
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        train_vids = np.unique(video_ids[train_idx])
+        test_vids = np.unique(video_ids[test_idx])
+        print(f"  Vídeos treino: {len(train_vids)} | Vídeos teste: {len(test_vids)}")
+    else:
+        print(f"\nSplit por JANELA (legacy — pode haver data leakage)")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+    print(f"Treino: {len(X_train)} amostras")
     print(f"Teste:  {len(X_test)} amostras")
+    tr_unique, tr_counts = np.unique(y_train, return_counts=True)
+    te_unique, te_counts = np.unique(y_test, return_counts=True)
+    for idx, count in zip(tr_unique, tr_counts):
+        print(f"  Treino {CLASSES[idx]}: {count}")
+    for idx, count in zip(te_unique, te_counts):
+        print(f"  Teste  {CLASSES[idx]}: {count}")
 
     # Dataset com augmentation
-    train_ds = create_augmented_dataset(X_train, y_train, BATCH_SIZE)
+    if args.no_augmentation:
+        print("Data augmentation DESATIVADO")
+        train_ds = (
+            tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            .shuffle(len(X_train), reshuffle_each_iteration=True)
+            .batch(BATCH_SIZE)
+            .prefetch(tf.data.AUTOTUNE)
+        )
+    else:
+        print("Data augmentation ATIVADO (flip + brilho)")
+        train_ds = create_augmented_dataset(X_train, y_train, BATCH_SIZE)
+
     val_ds = (
         tf.data.Dataset.from_tensor_slices((X_test, y_test))
         .batch(BATCH_SIZE)
@@ -301,15 +374,36 @@ if __name__ == "__main__":
 
     # Modelo
     print("\n" + "=" * 50)
-    print("CONSTRUINDO MODELO")
+    print(f"CONSTRUINDO MODELO: {args.model}")
     print("=" * 50)
-    model = build_cnn_lstm_model(
-        sequence_length=SEQUENCE_LENGTH,
-        img_height=IMG_HEIGHT,
-        img_width=IMG_WIDTH,
-        fine_tune_layers=FINE_TUNE_LAYERS,
-        learning_rate=LEARNING_RATE,
-    )
+
+    if args.model == "cnn_only":
+        from src.model import build_cnn_only_model
+        model = build_cnn_only_model(
+            sequence_length=SEQUENCE_LENGTH,
+            img_height=img_h,
+            img_width=img_w,
+            fine_tune_layers=ft_layers,
+            learning_rate=LEARNING_RATE,
+        )
+    elif args.model == "cnn_lstm_frozen":
+        model = build_cnn_lstm_model(
+            sequence_length=SEQUENCE_LENGTH,
+            img_height=img_h,
+            img_width=img_w,
+            fine_tune_layers=0,
+            learning_rate=LEARNING_RATE,
+            lstm_units=args.lstm_units,
+        )
+    else:
+        model = build_cnn_lstm_model(
+            sequence_length=SEQUENCE_LENGTH,
+            img_height=img_h,
+            img_width=img_w,
+            fine_tune_layers=ft_layers,
+            learning_rate=LEARNING_RATE,
+            lstm_units=args.lstm_units,
+        )
     model.summary()
 
     # Callbacks

@@ -1,0 +1,401 @@
+% BRACIS 2026 — Springer LNCS/LNAI format
+% Double-blind submission — anonymized
+%
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+%
+\usepackage{graphicx}
+%
+% URLs in blue roman font according to Springer's eBook style:
+\usepackage{color}
+\renewcommand\UrlFont{\color{blue}\rmfamily}
+\urlstyle{rm}
+%
+\begin{document}
+%
+\title{A Real-Time Fall Detection System Using CNN-LSTM\\with Integrated IoT and Mobile Alerts}
+%
+\titlerunning{Real-Time Fall Detection with CNN-LSTM and IoT Alerts}
+%
+\author{Anonymous Author(s)}
+%
+\authorrunning{Anonymous}
+%
+\institute{Anonymous Institution}
+%
+\maketitle
+%
+\begin{abstract}
+Falls are a leading cause of injury and death among the elderly, and the time between a fall and the arrival of help is a critical factor for reducing long-term consequences. This paper presents an end-to-end real-time fall detection system based on computer vision and deep learning. The proposed architecture employs a hybrid CNN+LSTM model in which a MobileNetV2 backbone (with transfer learning and fine-tuning) extracts spatial features from each video frame, while an LSTM layer analyzes the temporal evolution of movement over 20-frame sliding windows. The system integrates three alert layers: (i)~camera-based detection on a personal computer, (ii)~local alarms via an ESP32 microcontroller with a buzzer and LEDs, and (iii)~remote notifications through a mobile application built with React Native/Expo --- all interconnected by an MQTT broker (Eclipse Mosquitto). The model was trained and evaluated on the UR Fall Detection dataset (30~fall sequences and 40~daily activity sequences), yielding 1,111~samples after sliding window extraction. Experimental results show 100\% accuracy, precision, recall, and F1-score on the test set (223~samples), with a final loss of $3.28 \times 10^{-4}$. To mitigate false positives in practical scenarios, a conservative confidence threshold of 75\% and temporal confirmation over 3~consecutive predictions were implemented.
+
+\keywords{Fall detection \and Deep learning \and CNN-LSTM \and Computer vision \and IoT \and MQTT \and Mobile application}
+\end{abstract}
+%
+%
+%
+\section{Introduction}
+
+Population aging is a global trend that poses significant challenges to healthcare systems. According to the World Health Organization, at least one third of adults over 65 experience at least one fall per year, and this proportion increases with age and fall history~\cite{lord2001,heinrich2010}. An unassisted fall can lead to fractures, traumatic brain injuries, and, in severe cases, death. The duration for which an elderly person remains on the ground without assistance is an aggravating factor directly correlated with increased mortality and chronic sequelae~\cite{kwolek2014}.
+
+In this context, automated fall detection systems are increasingly relevant as they enable immediate assistance without relying solely on the injured person's ability to call for help. Existing approaches can be classified into three categories: (i)~wearable sensor-based (accelerometers and gyroscopes), (ii)~ambient sensor-based (cameras, depth sensors), and (iii)~hybrid systems. Wearable sensors present practical limitations such as the user forgetting to wear the device, discomfort, and high false alarm rates triggered by high-acceleration daily activities~\cite{kwolek2014,mubashir2013}. Conventional RGB camera-based approaches, although non-intrusive, suffer from lighting variations and the absence of depth information~\cite{kwolek2014}.
+
+Recent advances in deep learning and computer vision have enabled new approaches to this problem. Convolutional Neural Networks (CNNs) can automatically extract relevant visual features, while recurrent networks such as LSTM (Long Short-Term Memory) model temporal dependencies in data sequences~\cite{lstm1997}. The CNN+LSTM combination has shown promise for video event classification, capturing both static posture and movement dynamics over time~\cite{lu2019}.
+
+This paper proposes a complete fall detection system that extends beyond the AI model to encompass the entire alert chain: from video capture and real-time classification, through alert distribution via MQTT protocol, to the triggering of local alarms on an ESP32 microcontroller and remote notifications on a React Native mobile application. The contributions of this work are:
+
+\begin{enumerate}
+  \item Development and validation of a hybrid CNN (MobileNetV2) + LSTM model for binary fall classification in video sequences;
+  \item Implementation of a complete data pipeline (ETL) for the UR Fall Detection dataset, with sliding window and data augmentation;
+  \item Integration of a distributed alert system using MQTT, ESP32, and a mobile application;
+  \item A temporal confirmation mechanism for reducing false positives in real-time inference scenarios.
+\end{enumerate}
+
+\section{Related Work}
+
+\subsection{Wearable Sensor-Based Approaches}
+
+Kwolek and Kepski~\cite{kwolek2014} proposed an embedded system combining data from a triaxial accelerometer with depth maps obtained from a Kinect sensor. Initial fall detection is performed via a threshold on the total acceleration vector ($SV_{Total} > 3g$), and confirmation is done by an SVM classifier operating on features extracted from depth images. The system achieved 98.33\% accuracy with 100\% sensitivity on the UR Fall Detection Dataset (URFD). However, the dependence on the Kinect sensor limits deployment to indoor environments, and its commercial discontinuation hinders scalability.
+
+Sucerquia et al.~\cite{sisfall2017} presented the SisFall dataset, comprising 19~types of daily activities and 15~types of falls performed by 38~volunteers (23~young adults and 15~elderly), using a waist-mounted wearable device with accelerometer and gyroscope. Using threshold classification with the C8 feature (standard deviation of magnitude on the horizontal plane), they achieved up to 96.1\% accuracy with young adults but demonstrated that performance drops significantly when algorithms trained on young adults are validated with elderly subjects.
+
+\subsection{Deep Learning-Based Approaches}
+
+Mubashir et al.~\cite{mubashir2013} conducted a comprehensive review of fall detection approaches, identifying that vision-based systems offer advantages in terms of non-intrusiveness but face challenges with lighting variations, occlusion, and privacy.
+
+Lu et al.~\cite{lu2019} proposed a combination of three-dimensional CNN with LSTM for fall detection from video kinematic data, demonstrating that temporal analysis is essential for distinguishing falls from similar abrupt movements such as quickly sitting down.
+
+Chhetri et al.~\cite{chhetri2021} investigated enhanced optical flow with deep learning for vision-based fall detection, further evidencing the relevance of temporal modeling in video-based approaches.
+
+The present work differentiates itself by proposing a lightweight architecture (MobileNetV2) suitable for execution on limited hardware, combined with an end-to-end distributed alert system that includes embedded hardware and a mobile application.
+
+\section{Methodology}
+
+The methodology is organized into four axes: (i)~data preparation, (ii)~model architecture, (iii)~training and evaluation, and (iv)~integrated alert system.
+
+\subsection{Dataset and Data Preparation}
+
+The dataset used is the UR Fall Detection Dataset~\cite{kwolek2014}, originally developed by the University of Rzesz\'{o}w (Poland). It contains 30~fall sequences and 40~normal daily activity (ADL) sequences captured by RGB cameras with synchronized depth and accelerometer data.
+
+\subsubsection{Preprocessing Pipeline (ETL).}
+The extraction, transformation, and loading pipeline performs the following steps:
+\begin{enumerate}
+  \item \textbf{Recursive scan:} automatic identification of image files in heterogeneous subdirectories;
+  \item \textbf{Media conversion:} transformation of PNG image sequences into AVI videos at 30\,fps using OpenCV;
+  \item \textbf{Resizing:} normalization of all frames to $128 \times 128$ pixels;
+  \item \textbf{Intensity normalization:} conversion to \texttt{float32} and scaling to $[0, 1]$;
+  \item \textbf{Sliding window:} extraction of subsequences of $T = 20$~frames with stride of 10, generating multiple samples per video;
+  \item \textbf{Stratified split:} 80/20 train/test division preserving class proportions.
+\end{enumerate}
+
+The pipeline yielded \textbf{1,111~samples} (850~Normal, 261~Fall), each with dimensions $(20, 128, 128, 3)$. Fig.~\ref{fig:pipeline} illustrates the complete data pipeline.
+
+\begin{figure}
+\centering
+\includegraphics[width=0.88\textwidth]{pipeline_dados_branco.png}
+\caption{Data preprocessing pipeline (ETL).}\label{fig:pipeline}
+\end{figure}
+
+\subsubsection{Data Augmentation.}
+To mitigate class imbalance and improve generalization, random transformations were applied at training time: horizontal flip (50\% probability) and brightness variation ($\pm 20\%$). Transformations are applied consistently across all frames within a sequence to preserve temporal coherence.
+
+\subsection{Model Architecture}
+
+The proposed model is a hybrid CNN+LSTM architecture composed of three functional blocks, as shown in Fig.~\ref{fig:arquitetura}.
+
+\begin{figure}
+\centering
+\includegraphics[width=0.82\textwidth]{arquitetura_modelo_cnn_lstm_branco.png}
+\caption{Architecture of the proposed hybrid CNN+LSTM model.}\label{fig:arquitetura}
+\end{figure}
+
+\subsubsection{Spatial Feature Extractor --- MobileNetV2.}
+MobileNetV2~\cite{mobilenetv2} was selected as the backbone for its computational efficiency, based on depthwise separable convolution blocks with inverted residuals and linear bottlenecks. Its ImageNet pre-trained weights provide a rich base of visual representations (transfer learning). The last 30~layers were unfrozen to allow fine-tuning to the fall detection domain. The \textbf{TimeDistributed} wrapper applies the CNN to each of the $T = 20$~frames individually, producing a sequence of 1,280-dimensional feature vectors.
+
+\subsubsection{Temporal Analysis --- LSTM.}
+An LSTM layer~\cite{lstm1997} with 64~units receives the feature vector sequence and models temporal dependencies between frames. Its gating mechanisms (input, forget, output) allow retaining relevant information across the sequence while discarding noise, making it suitable for identifying the dynamic pattern of a fall --- which involves acceleration, posture change, and ground contact.
+
+\subsubsection{Classification and Regularization.}
+The LSTM output is regularized by \textbf{Dropout} (rate 0.5) and fed to a \textbf{Dense} layer with a single neuron and \textbf{sigmoid} activation, producing the fall probability $p \in [0,1]$.
+
+\subsection{Training}
+
+Table~\ref{tab:hyperparams} summarizes the training hyperparameters.
+
+\begin{table}
+\centering
+\caption{Training hyperparameters.}\label{tab:hyperparams}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Value} \\
+\hline
+Optimizer & Adam \\
+Initial learning rate & $1 \times 10^{-4}$ \\
+Loss function & Binary crossentropy \\
+Batch size & 4 \\
+Maximum epochs & 30 \\
+Sequence length ($T$) & 20 frames \\
+Input resolution & $128 \times 128$ pixels \\
+Unfrozen layers (fine-tuning) & 30 \\
+Dropout rate & 0.5 \\
+\hline
+\end{tabular}
+\end{table}
+
+Data was loaded via \texttt{tf.data.Dataset} with prefetch and shuffle. Three callbacks were employed: \textbf{ModelCheckpoint} (saves the model with best \texttt{val\_accuracy}), \textbf{EarlyStopping} (halts training after 7~epochs without improvement in \texttt{val\_loss}), and \textbf{ReduceLROnPlateau} (reduces learning rate by factor 0.5 after 3~epochs without improvement).
+
+\subsection{Real-Time Inference Optimizations}
+
+To enable execution on limited hardware (Intel i7 8th gen CPU, 8\,GB RAM, no dedicated GPU), the following optimizations were applied:
+
+\begin{enumerate}
+  \item \textbf{Direct model call:} using \texttt{model(input, training=False)} instead of \texttt{model.predict()}, eliminating per-call graph creation;
+  \item \textbf{Circular buffer:} replacing Python list with \texttt{collections.deque(maxlen=20)};
+  \item \textbf{Frame skipping:} prediction every 5~frames, reducing CPU load by 80\%;
+  \item \textbf{TFLite conversion:} model export to TensorFlow Lite with optional INT8 quantization;
+  \item \textbf{Reduced resolution:} $128 \times 128$ instead of $224 \times 224$, providing ${\sim}3\times$ computational reduction.
+\end{enumerate}
+
+\subsubsection{Temporal Confirmation Mechanism.}
+To mitigate false positives caused by abrupt movements (quickly sitting down, bending), a temporal confirmation mechanism was implemented with two parameters:
+
+\begin{itemize}
+  \item \textbf{Conservative threshold} ($\theta = 0.75$): a prediction only contributes to the ``streak'' count if $p > 0.75$;
+  \item \textbf{Consecutive confirmation} ($N = 3$): the fall alert is only triggered after 3~consecutive predictions above $\theta$.
+\end{itemize}
+
+When $0.5 < p \leq 0.75$, the system displays a ``Possible fall'' status without triggering the alert, acting as a transition zone.
+
+\subsection{Integrated Alert System}
+
+The alert system distributes notifications through the \textbf{MQTT} (Message Queuing Telemetry Transport) protocol~\cite{mqtt}, using the \textbf{Eclipse Mosquitto}~\cite{mosquitto} broker as a central message hub, as illustrated in Fig.~\ref{fig:sistema}.
+
+\begin{figure}
+\centering
+\includegraphics[width=0.88\textwidth]{arquitetura_sistema_branco.png}
+\caption{Distributed alert system architecture.}\label{fig:sistema}
+\end{figure}
+
+Alert messages are transmitted in JSON format containing the fields: \texttt{alert} (event type), \texttt{confidence} (model confidence), \texttt{timestamp}, and \texttt{metadata} (frame ID, model name).
+
+\subsubsection{Hardware Layer --- ESP32.}
+The ESP32 microcontroller runs Arduino-based firmware that: receives alerts via Serial (USB, for testing) or MQTT (WiFi, for production); activates a passive buzzer (GPIO~18) and red LED (GPIO~19) for 10~seconds upon fall detection; and maintains a green LED (GPIO~21) as a system status indicator.
+
+\subsubsection{Mobile Layer --- React Native Application.}
+The application was developed with React Native (v0.81), Expo SDK~54, and TypeScript, connecting to the Mosquitto broker via WebSocket (port~9001). Fig.~\ref{fig:telas} presents the four main screens.
+
+\begin{figure}
+\centering
+\includegraphics[width=0.82\textwidth]{telas_app_mobile_branco.png}
+\caption{Mobile application screens: (a)~Dashboard, (b)~Alarm, (c)~History, and (d)~Settings.}\label{fig:telas}
+\end{figure}
+
+Key functionalities include: (i)~\textbf{Dashboard} with MQTT connection status and alert statistics; (ii)~\textbf{Alarm} screen with automatic activation, looping audio, vibration, and buttons for ``Confirm Fall'', ``False Alarm'', and ``Call Emergency''; (iii)~\textbf{History} with persisted event log and category filters (confirmed, false alarm, pending, test); and (iv)~\textbf{Settings} for broker address, confidence threshold, and emergency number. The software architecture uses Context API with \texttt{useReducer} for global state management, and three decoupled services: MqttService (connection and reconnection), AlarmService (audio and haptics), and EventStorage (persistence via AsyncStorage).
+
+\section{Results}
+
+\subsection{Model Performance}
+
+The model was trained for 30~epochs on 888~training samples and evaluated on 223~test samples. Table~\ref{tab:metrics} summarizes the metrics obtained on the test set.
+
+\begin{table}
+\centering
+\caption{Evaluation metrics on the test set.}\label{tab:metrics}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-score} & \textbf{Support} \\
+\hline
+Normal & 1.0000 & 1.0000 & 1.0000 & 171 \\
+Fall   & 1.0000 & 1.0000 & 1.0000 & 52 \\
+\hline
+\textbf{Overall accuracy} & \multicolumn{4}{c|}{\textbf{100.00\%}} \\
+\hline
+\textbf{Final loss} & \multicolumn{4}{c|}{$3.28 \times 10^{-4}$} \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Confusion Matrix}
+
+The confusion matrix (Table~\ref{tab:confusion} and Fig.~\ref{fig:confusao}) shows that the model correctly classified all 223~samples, with zero false positives and zero false negatives.
+
+\begin{table}
+\centering
+\caption{Confusion matrix on the test set.}\label{tab:confusion}
+\begin{tabular}{|l|c|c|}
+\hline
+ & \textbf{Predicted Normal} & \textbf{Predicted Fall} \\
+\hline
+\textbf{Actual Normal} & 171 & 0 \\
+\textbf{Actual Fall}   & 0   & 52 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}
+\centering
+\includegraphics[width=0.50\textwidth]{confusion_matrix.png}
+\caption{Confusion matrix visualization on the test set (171~TN, 52~TP, 0~FP, 0~FN).}\label{fig:confusao}
+\end{figure}
+
+\subsection{Training Convergence}
+
+Fig.~\ref{fig:curvas} presents the loss and accuracy curves over the 30~training epochs for both training and validation sets.
+
+\begin{figure}
+\centering
+\includegraphics[width=0.88\textwidth]{curves.png}
+\caption{Training curves: loss (left) and accuracy (right) for training and validation sets over 30 epochs.}\label{fig:curvas}
+\end{figure}
+
+The following observations were made during training:
+\begin{itemize}
+  \item Validation accuracy reached 1.0 in the early epochs and remained stable;
+  \item Validation loss decreased progressively from 0.00636 to 0.00034 by the end of 30~epochs;
+  \item The ReduceLROnPlateau callback was triggered, reducing the learning rate from $1 \times 10^{-4}$ to $1.56 \times 10^{-6}$;
+  \item No overfitting was observed: training and validation curves evolved in parallel, as evidenced in Fig.~\ref{fig:curvas}.
+\end{itemize}
+
+\subsection{Sample Distribution}
+
+Table~\ref{tab:samples} details the dataset composition after sliding window processing.
+
+\begin{table}
+\centering
+\caption{Sample distribution by class.}\label{tab:samples}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Class} & \textbf{Total samples} & \textbf{Proportion} \\
+\hline
+Normal & 850 & 76.5\% \\
+Fall   & 261 & 23.5\% \\
+\hline
+\textbf{Total} & \textbf{1,111} & 100\% \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Real-Time Inference Tests}
+
+The system was tested on a laptop with an Intel i7 8th generation CPU, 8\,GB RAM, and an MX110 GPU (not used by TensorFlow on Windows). Qualitative results include:
+\begin{itemize}
+  \item The model correctly detected falls when processing dataset videos;
+  \item The temporal confirmation mechanism ($\theta = 0.75$, $N = 3$) eliminated premature detections observed in the version without confirmation;
+  \item Inference every 5~frames enabled smooth CPU execution;
+  \item The ``Possible fall'' status ($0.5 < p \leq 0.75$) functioned as a transition indicator without triggering false alarms.
+\end{itemize}
+
+\subsection{Alert System Integration}
+
+Integration tests via MQTT demonstrated that: messages published by the Python module were simultaneously received by the ESP32 and the mobile application; the app responded with audio alarm, vibration, and automatic navigation to the alert screen; automatic reconnection to the broker worked correctly after simulated disconnections; and event history persisted between application sessions via AsyncStorage.
+
+\section{Discussion}
+
+\subsection{Analysis of Results}
+
+The 100\% accuracy results, while notable, should be interpreted with caution. The UR Fall Detection dataset, despite being an established benchmark in the literature~\cite{kwolek2014}, has inherent limitations:
+
+\begin{enumerate}
+  \item \textbf{Limited volume:} 70~original videos (30~falls + 40~ADLs) expanded to 1,111~samples via sliding window. Adjacent samples share most frames, which may inflate metrics when the train/test split occurs at the window level rather than the video level;
+  \item \textbf{Controlled environment:} all videos were recorded in a laboratory with a relatively static background, which differs from real domestic environments;
+  \item \textbf{Limited participant diversity:} few individuals performed the fall simulations, limiting variability in body types and movement styles.
+\end{enumerate}
+
+As demonstrated by Sucerquia et al.~\cite{sisfall2017}, algorithms trained with data from young adults exhibit significant performance degradation when applied to elderly subjects, indicating that the generalization of the proposed model to the target population requires additional validation with more representative data.
+
+\subsection{Comparison with Related Work}
+
+Table~\ref{tab:comparison} compares the results of the present work with approaches from the literature on the URFD dataset.
+
+\begin{table}
+\centering
+\caption{Comparison with related work.}\label{tab:comparison}
+\begin{tabular}{|l|l|c|c|c|}
+\hline
+\textbf{Work} & \textbf{Method} & \textbf{Acc.} & \textbf{Sens.} & \textbf{Spec.} \\
+\hline
+\cite{kwolek2014} & SVM + depth + accel. & 98.33\% & 100\% & 96.67\% \\
+\cite{kwolek2014} & Threshold (UFT) & 95.00\% & 100\% & 90.00\% \\
+\cite{sisfall2017} & Threshold C8 (SisFall) & 96.10\% & 95.54\% & 96.38\% \\
+\textbf{This work} & \textbf{CNN-LSTM (MobNetV2)} & \textbf{100\%} & \textbf{100\%} & \textbf{100\%} \\
+\hline
+\end{tabular}
+\end{table}
+
+Although the numbers are superior, direct comparison is limited: previous works use wearable sensors and/or depth data, while this work operates exclusively with RGB cameras. Furthermore, the split strategy (window vs. video) and test set sizes differ.
+
+\subsection{Limitations and Future Work}
+
+The main identified limitations are:
+
+\begin{itemize}
+  \item \textbf{Generalization:} the model needs validation in real environments with different cameras, lighting variations, and elderly participants;
+  \item \textbf{Expanded dataset:} inclusion of complementary datasets (SisFall, Kaggle Fall Detection) and collection of proprietary data with real cameras is necessary;
+  \item \textbf{Privacy:} the use of cameras in domestic environments raises ethical concerns that can be mitigated through local processing (edge computing) and exclusion of image storage;
+  \item \textbf{Embedded hardware:} running the model directly on ESP32 or Raspberry Pi would eliminate PC dependency;
+  \item \textbf{Background notifications:} push notifications when the mobile application is in the background remain to be implemented.
+\end{itemize}
+
+\section{Conclusion}
+
+This paper presented the complete development of a fall detection system based on artificial intelligence, spanning from the deep learning model construction to the delivery of alerts to caregivers. The hybrid CNN (MobileNetV2) + LSTM architecture demonstrated the ability to correctly classify video sequences from the UR Fall Detection dataset, achieving 100\% accuracy, precision, and recall on the test set.
+
+The system successfully integrated three alert layers --- camera-based detection, local alarm via ESP32, and remote notification via mobile application --- using the MQTT protocol as the communication layer. The implemented temporal confirmation mechanism (75\% threshold with 3~consecutive predictions) proved effective in reducing false positives during real-time inference.
+
+Inference optimizations (TFLite, frame skipping, circular buffer, direct model call) enabled system execution on limited hardware (Intel i7 CPU, 8\,GB RAM), demonstrating that the approach is viable for deployment in environments with modest computational resources.
+
+Future work includes model validation in real domestic environments with elderly participants, dataset expansion with proprietary and complementary data sources, migration of inference to edge devices, and completion of the mobile application's push notification module.
+
+\begin{credits}
+\subsubsection{\ackname}
+This study was partially funded by a scientific initiation program. Details are omitted for double-blind review compliance.
+
+\subsubsection{\discintname}
+The authors have no competing interests to declare that are relevant to the content of this article.
+\end{credits}
+%
+% ---- Bibliography ----
+%
+% \bibliographystyle{splncs04}
+% \bibliography{mybibliography}
+%
+\begin{thebibliography}{12}
+
+\bibitem{chhetri2021}
+Chhetri, S., Alsadoon, A., Al-Dala'in, T., Prasad, P.W.C., Rashid, T.A., Maag, A.: Deep learning for vision-based fall detection system: enhanced optical dynamic flow. arXiv preprint arXiv:2104.05744 (2021)
+
+\bibitem{heinrich2010}
+Heinrich, S., Rapp, K., Rissmann, U., Becker, C., K\"{o}nig, H.-H.: Cost of falls in old age: a systematic review. Osteoporosis International \textbf{21}, 891--902 (2010)
+
+\bibitem{igual2013}
+Igual, R., Medrano, C., Plaza, I.: Challenges, issues and trends in fall detection systems. BioMedical Engineering OnLine \textbf{12}(1), 1--24 (2013)
+
+\bibitem{lstm1997}
+Hochreiter, S., Schmidhuber, J.: Long Short-Term Memory. Neural Computation \textbf{9}(8), 1735--1780 (1997)
+
+\bibitem{kwolek2014}
+Kwolek, B., Kepski, M.: Human fall detection on embedded platform using depth maps and wireless accelerometer. Computer Methods and Programs in Biomedicine \textbf{117}(3), 489--501 (2014)
+
+\bibitem{lord2001}
+Lord, S., Sherrington, C., Menz, H.: Falls in Older People: Risk Factors and Strategies for Prevention. Cambridge University Press, Cambridge (2001)
+
+\bibitem{lu2019}
+Lu, N., Wu, Y., Feng, L., Song, J.: Deep learning for fall detection: three-dimensional CNN combined with LSTM on video kinematic data. IEEE Journal of Biomedical and Health Informatics \textbf{23}(1), 314--323 (2019)
+
+\bibitem{mobilenetv2}
+Sandler, M., Howard, A., Zhu, M., Zhmoginov, A., Chen, L.-C.: MobileNetV2: inverted residuals and linear bottlenecks. In: Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 4510--4520 (2018)
+
+\bibitem{mosquitto}
+Eclipse Foundation: Eclipse Mosquitto -- an open source MQTT broker, \url{https://mosquitto.org/}, last accessed 2026/03/23
+
+\bibitem{mqtt}
+OASIS: MQTT Version 3.1.1 -- OASIS Standard, \url{https://mqtt.org/}, last accessed 2026/03/23
+
+\bibitem{mubashir2013}
+Mubashir, M., Shao, L., Seed, L.: A survey on fall detection: principles and approaches. Neurocomputing \textbf{100}, 144--152 (2013)
+
+\bibitem{sisfall2017}
+Sucerquia, A., L\'{o}pez, J.D., Vargas-Bonilla, J.F.: SisFall: a fall and movement dataset. Sensors \textbf{17}(1), 198 (2017)
+
+\end{thebibliography}
+\end{document}
