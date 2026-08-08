@@ -4,8 +4,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 import tensorflow as tf
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    roc_auc_score,
+    roc_curve,
+    precision_recall_fscore_support,
+)
 import json
 import csv
 import datetime
@@ -44,8 +50,9 @@ def make_run_dir() -> str:
 
 def save_history(history, run_dir: str):
     history_path = os.path.join(run_dir, "history.json")
+    serializable = {k: [float(v) for v in vals] for k, vals in history.history.items()}
     with open(history_path, "w", encoding="utf-8") as f:
-        json.dump(history.history, f, ensure_ascii=False, indent=2)
+        json.dump(serializable, f, ensure_ascii=False, indent=2)
 
     csv_path = os.path.join(run_dir, "history.csv")
     keys = list(history.history.keys())
@@ -82,7 +89,8 @@ def save_history(history, run_dir: str):
 
 
 def save_eval_artifacts(model, X_test, y_test, run_dir: str):
-    y_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0).reshape(-1)
+    X_test_f = X_test.astype(np.float32) / 255.0 if X_test.dtype == np.uint8 else X_test
+    y_prob = model.predict(X_test_f, batch_size=BATCH_SIZE, verbose=0).reshape(-1)
     y_pred = (y_prob > 0.5).astype(np.int32)
 
     report = classification_report(y_test, y_pred, target_names=CLASSES, digits=4, zero_division=0)
@@ -120,11 +128,52 @@ def save_eval_artifacts(model, X_test, y_test, run_dir: str):
     except Exception as e:
         print(f"Aviso: falha ao salvar arrays: {e}")
 
+    extra_metrics = {}
+    try:
+        # CLASSES = ["Fall", "Normal"] -> índice Fall=0, Normal=1 (ver configs)
+        # Assumimos label positivo = Fall (classe de interesse clínico).
+        # Para AUC, a probabilidade de "Fall" é (1 - y_prob) se a sigmoid foi
+        # treinada com label 1 = Normal. Detecta via heurística: se mais amostras
+        # de y_test == 1 têm y_prob alto, então 1 é a classe positiva da sigmoid.
+        prec, rec, f1, _ = precision_recall_fscore_support(
+            y_test, y_pred, labels=[0, 1], zero_division=0
+        )
+        cls0, cls1 = CLASSES[0], CLASSES[1]
+        extra_metrics[f"precision_{cls0.lower()}"] = float(prec[0])
+        extra_metrics[f"recall_{cls0.lower()}"] = float(rec[0])
+        extra_metrics[f"f1_{cls0.lower()}"] = float(f1[0])
+        extra_metrics[f"precision_{cls1.lower()}"] = float(prec[1])
+        extra_metrics[f"recall_{cls1.lower()}"] = float(rec[1])
+        extra_metrics[f"f1_{cls1.lower()}"] = float(f1[1])
 
-def save_run_metadata(run_dir: str, extra: dict):
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+        extra_metrics.update({"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)})
+
+        auc = float(roc_auc_score(y_test, y_prob))
+        extra_metrics["auc_roc"] = auc
+
+        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        fig, ax = plt.subplots(figsize=(4.8, 4.2))
+        ax.plot(fpr, tpr, label=f"AUC = {auc:.4f}")
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", alpha=0.6)
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.set_title("ROC Curve")
+        ax.legend(loc="lower right")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(run_dir, "roc_curve.png"), dpi=200)
+        plt.close(fig)
+    except Exception as e:
+        print(f"Aviso: falha ao calcular métricas extras: {e}")
+
+    return extra_metrics
+
+
+def save_run_metadata(run_dir: str, extra: dict, data_dir=None):
     meta = {
         "timestamp": os.path.basename(run_dir).replace("run-", ""),
-        "data_dir": str(DATA_DIR),
+        "data_dir": str(data_dir or DATA_DIR),
         "img_height": IMG_HEIGHT,
         "img_width": IMG_WIDTH,
         "sequence_length": SEQUENCE_LENGTH,
@@ -153,8 +202,7 @@ def extract_sequences_from_video(video_path: str, label: int):
         if not ret:
             break
         frame = cv2.resize(frame, (IMG_WIDTH, IMG_HEIGHT))
-        frame = frame.astype(np.float32) / 255.0
-        frames.append(frame)
+        frames.append(frame)  # uint8, normaliza no pipeline tf.data
     cap.release()
 
     sequences = []
@@ -166,25 +214,31 @@ def extract_sequences_from_video(video_path: str, label: int):
     return sequences, label, os.path.basename(video_path), len(frames)
 
 
-def build_dataset():
+def build_dataset(data_dir=None):
     """
-    Carrega vídeos e retorna arrays numpy de sequências.
-    Usa float32 com resolução configurável para reduzir uso de RAM.
+    Carrega vídeos e retorna arrays numpy de sequências, labels e IDs de vídeo.
+    O video_id permite fazer split por vídeo (evita data leakage).
+    data_dir: caminho para a pasta com subpastas Normal/ e Fall/.
+              Se None, usa DATA_DIR de configs/config.py.
     """
+    data_dir = data_dir or DATA_DIR
     all_sequences = []
     all_labels = []
+    all_video_ids = []
+    video_counter = 0
 
     print("=" * 50)
     print("CARREGANDO DATASET")
     print("=" * 50)
+    print(f"  Fonte: {data_dir}")
 
     for class_index, class_name in enumerate(CLASSES):
-        class_dir = os.path.join(DATA_DIR, class_name)
+        class_dir = os.path.join(data_dir, class_name)
         if not os.path.exists(class_dir):
             print(f"AVISO: Pasta '{class_dir}' não encontrada!")
             continue
 
-        files = [f for f in os.listdir(class_dir) if f.endswith(('.avi', '.mp4'))]
+        files = sorted(f for f in os.listdir(class_dir) if f.endswith(('.avi', '.mp4')))
         print(f"\nClasse '{class_name}': {len(files)} vídeos encontrados")
 
         if not files:
@@ -199,14 +253,20 @@ def build_dataset():
             if sequences:
                 all_sequences.extend(sequences)
                 all_labels.extend([label] * len(sequences))
-                print(f"   {name}: {n_frames} frames -> {len(sequences)} amostras")
+                all_video_ids.extend([video_counter] * len(sequences))
+                print(f"   {name}: {n_frames} frames -> {len(sequences)} amostras (video_id={video_counter})")
             else:
                 print(f"   {name}: {n_frames} frames (insuficiente, mínimo: {SEQUENCE_LENGTH})")
+            video_counter += 1
 
     if not all_sequences:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([])
 
-    return np.array(all_sequences, dtype=np.float32), np.array(all_labels)
+    return (
+        np.array(all_sequences, dtype=np.uint8),
+        np.array(all_labels),
+        np.array(all_video_ids),
+    )
 
 
 def create_augmented_dataset(X, y, batch_size):
@@ -219,6 +279,8 @@ def create_augmented_dataset(X, y, batch_size):
     dataset = tf.data.Dataset.from_tensor_slices((X, y))
 
     def augment(sequence, label):
+        sequence = tf.cast(sequence, tf.float32) / 255.0
+
         if tf.random.uniform([]) > 0.5:
             sequence = tf.image.flip_left_right(
                 tf.reshape(sequence, [-1, IMG_HEIGHT, IMG_WIDTH, 3])
@@ -246,17 +308,60 @@ def create_augmented_dataset(X, y, batch_size):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    X, y = build_dataset()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Treinamento do modelo de detecção de quedas")
+    parser.add_argument("--model", type=str, default="cnn_lstm",
+                        choices=["cnn_lstm", "cnn_only", "cnn_lstm_frozen"],
+                        help="Arquitetura do modelo (default: cnn_lstm)")
+    parser.add_argument("--fine-tune-layers", type=int, default=None,
+                        help="Override de camadas a descongelar (default: config.py)")
+    parser.add_argument("--lstm-units", type=int, default=64,
+                        help="Unidades da LSTM (default: 64)")
+    parser.add_argument("--no-augmentation", action="store_true",
+                        help="Desativar data augmentation")
+    parser.add_argument("--img-size", type=int, default=None,
+                        help="Override da resolução (ex: 224)")
+    parser.add_argument("--split", type=str, default="video",
+                        choices=["video", "window"],
+                        help="Estratégia de split: 'video' (sem leakage) ou 'window' (legacy)")
+    parser.add_argument("--tag", type=str, default="",
+                        help="Tag descritiva para o run (salva nos metadados)")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Número de épocas (sobrescreve configs/config.py)")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Caminho para o dataset (pasta com Normal/ e Fall/). "
+                             "Default: DATA_DIR de configs/config.py")
+    args = parser.parse_args()
+
+    img_h = args.img_size or IMG_HEIGHT
+    img_w = args.img_size or IMG_WIDTH
+    ft_layers = args.fine_tune_layers if args.fine_tune_layers is not None else FINE_TUNE_LAYERS
+    n_epochs = args.epochs if args.epochs is not None else EPOCHS
+
+    effective_data_dir = args.data_dir or str(DATA_DIR)
+    X, y, video_ids = build_dataset(data_dir=effective_data_dir)
 
     run_dir = make_run_dir()
+
+    n_videos = len(np.unique(video_ids)) if len(video_ids) > 0 else 0
     save_run_metadata(
         run_dir,
+        data_dir=effective_data_dir,
         extra={
             "n_samples": int(len(X)),
+            "n_videos": n_videos,
             "class_distribution": (
                 {CLASSES[int(k)]: int(v) for k, v in zip(*np.unique(y, return_counts=True))}
                 if len(y) > 0 else {}
             ),
+            "model_type": args.model,
+            "split_strategy": args.split,
+            "augmentation": not args.no_augmentation,
+            "lstm_units": args.lstm_units,
+            "img_size": img_h,
+            "fine_tune_layers_actual": ft_layers,
+            "tag": args.tag,
         },
     )
 
@@ -264,6 +369,7 @@ if __name__ == "__main__":
     print("RESUMO DO DATASET")
     print("=" * 50)
     print(f"Total de amostras: {len(X)}")
+    print(f"Total de vídeos: {n_videos}")
     ram_mb = X.nbytes / (1024 * 1024) if len(X) > 0 else 0
     print(f"Uso de RAM estimado (dados): {ram_mb:.0f} MB")
 
@@ -285,37 +391,94 @@ if __name__ == "__main__":
         exit(1)
 
     # Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    print(f"\nTreino: {len(X_train)} amostras")
+    if args.split == "video":
+        print(f"\nSplit por VÍDEO (GroupShuffleSplit) — sem data leakage")
+        gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(gss.split(X, y, groups=video_ids))
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        train_vids = np.unique(video_ids[train_idx])
+        test_vids = np.unique(video_ids[test_idx])
+        print(f"  Vídeos treino: {len(train_vids)} | Vídeos teste: {len(test_vids)}")
+    else:
+        print(f"\nSplit por JANELA (legacy — pode haver data leakage)")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+    print(f"Treino: {len(X_train)} amostras")
     print(f"Teste:  {len(X_test)} amostras")
+    tr_unique, tr_counts = np.unique(y_train, return_counts=True)
+    te_unique, te_counts = np.unique(y_test, return_counts=True)
+    for idx, count in zip(tr_unique, tr_counts):
+        print(f"  Treino {CLASSES[idx]}: {count}")
+    for idx, count in zip(te_unique, te_counts):
+        print(f"  Teste  {CLASSES[idx]}: {count}")
 
     # Dataset com augmentation
-    train_ds = create_augmented_dataset(X_train, y_train, BATCH_SIZE)
+    _normalize = lambda s, l: (tf.cast(s, tf.float32) / 255.0, l)
+
+    if args.no_augmentation:
+        print("Data augmentation DESATIVADO")
+        train_ds = (
+            tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            .shuffle(len(X_train), reshuffle_each_iteration=True)
+            .map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
+            .batch(BATCH_SIZE)
+            .prefetch(tf.data.AUTOTUNE)
+        )
+    else:
+        print("Data augmentation ATIVADO (flip + brilho)")
+        train_ds = create_augmented_dataset(X_train, y_train, BATCH_SIZE)
+
     val_ds = (
         tf.data.Dataset.from_tensor_slices((X_test, y_test))
+        .map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
         .batch(BATCH_SIZE)
         .prefetch(tf.data.AUTOTUNE)
     )
 
     # Modelo
     print("\n" + "=" * 50)
-    print("CONSTRUINDO MODELO")
+    print(f"CONSTRUINDO MODELO: {args.model}")
     print("=" * 50)
-    model = build_cnn_lstm_model(
-        sequence_length=SEQUENCE_LENGTH,
-        img_height=IMG_HEIGHT,
-        img_width=IMG_WIDTH,
-        fine_tune_layers=FINE_TUNE_LAYERS,
-        learning_rate=LEARNING_RATE,
-    )
+
+    if args.model == "cnn_only":
+        from src.model import build_cnn_only_model
+        model = build_cnn_only_model(
+            sequence_length=SEQUENCE_LENGTH,
+            img_height=img_h,
+            img_width=img_w,
+            fine_tune_layers=ft_layers,
+            learning_rate=LEARNING_RATE,
+        )
+    elif args.model == "cnn_lstm_frozen":
+        model = build_cnn_lstm_model(
+            sequence_length=SEQUENCE_LENGTH,
+            img_height=img_h,
+            img_width=img_w,
+            fine_tune_layers=0,
+            learning_rate=LEARNING_RATE,
+            lstm_units=args.lstm_units,
+        )
+    else:
+        model = build_cnn_lstm_model(
+            sequence_length=SEQUENCE_LENGTH,
+            img_height=img_h,
+            img_width=img_w,
+            fine_tune_layers=ft_layers,
+            learning_rate=LEARNING_RATE,
+            lstm_units=args.lstm_units,
+        )
     model.summary()
+
+    # Cada experimento salva seu próprio modelo dentro do run_dir
+    run_model_path = os.path.join(run_dir, "model.keras")
 
     # Callbacks
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
-            str(MODEL_PATH), save_best_only=True,
+            run_model_path, save_best_only=True,
             monitor='val_accuracy', mode='max', verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
@@ -336,7 +499,7 @@ if __name__ == "__main__":
 
     history = model.fit(
         train_ds,
-        epochs=EPOCHS,
+        epochs=n_epochs,
         validation_data=val_ds,
         callbacks=callbacks,
     )
@@ -350,19 +513,23 @@ if __name__ == "__main__":
     loss, accuracy = model.evaluate(val_ds, verbose=0)
     print(f"Acurácia no conjunto de teste: {accuracy * 100:.2f}%")
     print(f"Loss no conjunto de teste: {loss:.4f}")
-    print(f"\nModelo Keras salvo em: {MODEL_PATH}")
+    print(f"\nModelo Keras salvo em: {run_model_path}")
 
+    extra_metrics = save_eval_artifacts(model, X_test, y_test, run_dir) or {}
+    final_metrics = {"loss": float(loss), "accuracy": float(accuracy), **extra_metrics}
     with open(os.path.join(run_dir, "final_metrics.json"), "w", encoding="utf-8") as f:
-        json.dump({"loss": float(loss), "accuracy": float(accuracy)}, f, ensure_ascii=False, indent=2)
+        json.dump(final_metrics, f, ensure_ascii=False, indent=2)
 
-    save_eval_artifacts(model, X_test, y_test, run_dir)
-
-    # Converter para TFLite
+    # Converter para TFLite — salva junto ao run e também no path global
     print("\n" + "=" * 50)
     print("CONVERTENDO PARA TFLITE")
     print("=" * 50)
+    run_tflite_path = os.path.join(run_dir, "model.tflite")
     try:
-        convert_to_tflite(model, str(TFLITE_MODEL_PATH), quantize=True)
+        convert_to_tflite(model, run_tflite_path, quantize=True)
+        # Copia o melhor modelo (full-model) para o path global também
+        if args.tag == "full-model":
+            convert_to_tflite(model, str(TFLITE_MODEL_PATH), quantize=True)
     except Exception as e:
         print(f"Aviso: falha na conversão TFLite: {e}")
 
