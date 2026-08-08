@@ -29,7 +29,7 @@ BATCH_SIZE = 4
 EPOCHS = 30
 LEARNING_RATE = 1e-4
 FINE_TUNE_LAYERS = 30           # camadas da MobileNetV2 a descongelar (0 = todas congeladas)
-USE_MIXED_PRECISION = False     # float16 — ativar se tiver GPU com suporte
+USE_MIXED_PRECISION = False     # float16 — desativado (TimeDistributed trava XLA no T4)
 
 # Configurações ESP32
 ESP32_CONNECTION_TYPE = "serial"  # "serial" ou "mqtt"

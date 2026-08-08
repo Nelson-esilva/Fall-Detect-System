@@ -42,7 +42,9 @@ def build_cnn_lstm_model(
 
     x = layers.LSTM(lstm_units, return_sequences=False)(cnn_output)
     x = layers.Dropout(0.5)(x)
-    outputs = layers.Dense(1, activation='sigmoid')(x)
+    # Cast to float32 before sigmoid — required for mixed precision stability
+    x = layers.Activation('linear', dtype='float32')(x)
+    outputs = layers.Dense(1, activation='sigmoid', dtype='float32')(x)
 
     model = keras.Model(inputs, outputs)
     model.compile(
@@ -86,7 +88,8 @@ def build_cnn_only_model(
 
     x = layers.GlobalAveragePooling1D()(cnn_output)
     x = layers.Dropout(0.5)(x)
-    outputs = layers.Dense(1, activation='sigmoid')(x)
+    x = layers.Activation('linear', dtype='float32')(x)
+    outputs = layers.Dense(1, activation='sigmoid', dtype='float32')(x)
 
     model = keras.Model(inputs, outputs)
     model.compile(
@@ -104,6 +107,11 @@ def convert_to_tflite(model, output_path: str, quantize: bool = True):
     Quantização INT8 reduz o tamanho ~4x e melhora velocidade em CPU.
     """
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.target_spec.supported_ops = [
+        tf.lite.OpsSet.TFLITE_BUILTINS,
+        tf.lite.OpsSet.SELECT_TF_OPS,
+    ]
+    converter._experimental_lower_tensor_list_ops = False
     if quantize:
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
     tflite_model = converter.convert()

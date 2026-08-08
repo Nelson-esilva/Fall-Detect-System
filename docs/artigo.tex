@@ -47,7 +47,7 @@ Inteligência Artificial e Alerta Automatizado}}
 %  RESUMO
 % ============================================================
 \begin{abstract}
-Quedas representam uma das principais causas de lesões graves e óbitos em idosos e pessoas com mobilidade reduzida, sendo o tempo de resposta do socorro um fator determinante para a redução de sequelas. Este trabalho apresenta o desenvolvimento de um sistema ponta a ponta de detecção de quedas em tempo real baseado em visão computacional e aprendizado profundo. A arquitetura proposta emprega um modelo híbrido CNN\,+\,LSTM, no qual a rede convolucional MobileNetV2 (com transfer learning) extrai características espaciais de cada quadro de vídeo e uma camada LSTM analisa a evolução temporal do movimento em janelas de 20 quadros. O sistema integra três camadas de alerta: (i)~detecção por câmera em um computador pessoal, (ii)~alarme local via microcontrolador ESP32 com buzzer e LEDs, e (iii)~notificação remota por meio de um aplicativo mobile desenvolvido em React Native/Expo, todos interligados por um broker MQTT (Eclipse Mosquitto). O modelo foi treinado e avaliado no dataset \textit{UR Fall Detection}, composto por 30 sequências de quedas e 40 de atividades diárias, gerando 1\,111 amostras após aplicação de janela deslizante. Os resultados experimentais indicaram acurácia de 100\%, precisão, recall e F1-score iguais a 1,0 para ambas as classes no conjunto de teste (223 amostras), com perda final de $3{,}28 \times 10^{-4}$. Para mitigação de falsos positivos em cenários práticos, foram implementados um limiar conservador de confiança de 75\% e confirmação temporal por 3 predições consecutivas. O sistema demonstra viabilidade técnica para aplicação em ambientes residenciais e institucionais de cuidado.
+Quedas representam uma das principais causas de lesões graves e óbitos em idosos e pessoas com mobilidade reduzida, sendo o tempo de resposta do socorro um fator determinante para a redução de sequelas. Este trabalho apresenta o desenvolvimento de um sistema ponta a ponta de detecção de quedas em tempo real baseado em visão computacional e aprendizado profundo. A arquitetura proposta emprega um modelo híbrido CNN\,+\,LSTM, no qual a rede convolucional MobileNetV2 (com transfer learning) extrai características espaciais de cada quadro de vídeo e uma camada LSTM analisa a evolução temporal do movimento em janelas de 20 quadros. O sistema integra três camadas de alerta: (i)~detecção por câmera em um computador pessoal, (ii)~alarme local via microcontrolador ESP32 com buzzer e LEDs, e (iii)~notificação remota por meio de um aplicativo mobile desenvolvido em React Native/Expo, todos interligados por um broker MQTT (Eclipse Mosquitto). O modelo foi treinado e avaliado no dataset \textit{UR Fall Detection}, composto por 30 sequências de quedas e 40 de atividades diárias, gerando 1\,111 amostras após aplicação de janela deslizante. Os resultados experimentais indicaram acurácia de 100\%, precisão, recall e F1-score iguais a 1,0 para ambas as classes no conjunto de teste (250 amostras, split por vídeo sem data leakage), com perda final de $3{,}93 \times 10^{-4}$. Um estudo de ablação com seis configurações -- incluindo um \textit{baseline} CNN-only sem LSTM -- confirmou a consistência dos resultados e revelou que as características espaciais do MobileNetV2 sozinhas são suficientes para a tarefa neste dataset. Para mitigação de falsos positivos em cenários práticos, foram implementados um limiar conservador de confiança de 75\% e confirmação temporal por 3 predições consecutivas. O sistema demonstra viabilidade técnica para aplicação em ambientes residenciais e institucionais de cuidado.
 
 \medskip
 \noindent\textbf{Palavras-chave:} detecção de quedas; aprendizado profundo; CNN-LSTM; visão computacional; IoT; MQTT; ESP32; aplicativo mobile.
@@ -116,7 +116,7 @@ O pipeline de Extração, Transformação e Carregamento foi desenvolvido no scr
   \item \textbf{Redimensionamento:} normalização de todos os quadros para $128 \times 128$ pixels (escolhido para balancear qualidade e custo computacional);
   \item \textbf{Normalização de intensidade:} conversão para \texttt{float32} e escala $[0, 1]$;
   \item \textbf{Janela deslizante (\textit{sliding window}):} extração de subsequências de $T = 20$ quadros com passo (\textit{stride}) de 10, gerando múltiplas amostras por vídeo;
-  \item \textbf{Divisão estratificada:} separação 80/20 (treino/teste) preservando a proporção entre classes.
+  \item \textbf{Divisão por vídeo:} separação 80/20 (treino/teste) agrupada pelo identificador de vídeo de origem (\texttt{GroupShuffleSplit}), garantindo que todas as janelas de um mesmo vídeo pertençam exclusivamente ao conjunto de treino ou ao de teste, eliminando o data leakage entre janelas temporalmente adjacentes do mesmo vídeo.
 \end{enumerate}
 
 Ao final do pipeline, foram geradas \textbf{1\,111 amostras} (850 Normal, 261 Fall), cada uma com dimensão $(20, 128, 128, 3)$. A Figura~\ref{fig:pipeline} ilustra o fluxo completo do pipeline de dados.
@@ -215,7 +215,7 @@ Para viabilizar a execução em hardware limitado (CPU Intel i7 de 8ª geração
   \item \textbf{Chamada direta do modelo:} uso de \texttt{model(input, training=False)} em vez de \texttt{model.predict()}, eliminando a criação de grafo a cada chamada;
   \item \textbf{Buffer circular:} substituição de lista Python por \texttt{collections.deque(maxlen=20)}, reduzindo a complexidade de $O(n)$ para $O(1)$ na remoção do elemento mais antigo;
   \item \textbf{Inferência espaçada (\textit{skip frames}):} predição a cada 5 quadros, reduzindo a carga de GPU/CPU em 80\%;
-  \item \textbf{Conversão TFLite:} exportação do modelo para TensorFlow Lite com quantização INT8 opcional, reduzindo o tamanho e acelerando a inferência em CPU;
+  \item \textbf{Conversão TFLite:} exportação do modelo para TensorFlow Lite com quantização INT8 opcional, reduzindo o tamanho de 20,8\,MB para 2,4\,MB (compressão de $8{,}7\times$) e acelerando a inferência em CPU;
   \item \textbf{Resolução reduzida:} entrada de $128 \times 128$ em vez de $224 \times 224$, proporcionando redução de $\sim$3x no custo computacional.
 \end{enumerate}
 
@@ -289,7 +289,7 @@ A arquitetura de software utiliza Context API com \texttt{useReducer} para geren
 
 \subsection{Desempenho do Modelo}
 
-O modelo foi treinado durante 30 épocas sobre o conjunto de 888 amostras de treino e avaliado em 223 amostras de teste. A Tabela~\ref{tab:metricas} resume as métricas obtidas no conjunto de teste.
+O modelo foi treinado sobre o conjunto de 861 amostras de treino e avaliado em 250 amostras de teste (split por vídeo, 14 vídeos destinados ao teste, 56 ao treino). A Tabela~\ref{tab:metricas} resume as métricas obtidas no conjunto de teste.
 
 \begin{table}[H]
 \centering
@@ -299,18 +299,18 @@ O modelo foi treinado durante 30 épocas sobre o conjunto de 888 amostras de tre
 \toprule
 \textbf{Classe} & \textbf{Precisão} & \textbf{Revocação} & \textbf{F1-score} & \textbf{Suporte} \\
 \midrule
-Normal & 1,0000 & 1,0000 & 1,0000 & 171 \\
-Fall   & 1,0000 & 1,0000 & 1,0000 & 52 \\
+Normal & 1,0000 & 1,0000 & 1,0000 & 218 \\
+Fall   & 1,0000 & 1,0000 & 1,0000 & 32 \\
 \midrule
 \textbf{Acurácia geral} & \multicolumn{4}{c}{\textbf{100,00\%}} \\
-\textbf{Perda final (loss)} & \multicolumn{4}{c}{$3{,}28 \times 10^{-4}$} \\
+\textbf{Perda final (loss)} & \multicolumn{4}{c}{$3{,}93 \times 10^{-4}$} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsubsection{Matriz de Confusão}
 
-A matriz de confusão (Tabela~\ref{tab:confusao} e Figura~\ref{fig:confusao}) mostra que o modelo classificou corretamente todas as 223 amostras, sem falsos positivos nem falsos negativos.
+A matriz de confusão (Tabela~\ref{tab:confusao} e Figura~\ref{fig:confusao}) mostra que o modelo classificou corretamente todas as 250 amostras do conjunto de teste, sem falsos positivos nem falsos negativos.
 
 \begin{table}[H]
 \centering
@@ -320,8 +320,8 @@ A matriz de confusão (Tabela~\ref{tab:confusao} e Figura~\ref{fig:confusao}) mo
 \toprule
  & \textbf{Predito Normal} & \textbf{Predito Fall} \\
 \midrule
-\textbf{Real Normal} & 171 & 0 \\
-\textbf{Real Fall}   & 0   & 52 \\
+\textbf{Real Normal} & 218 & 0 \\
+\textbf{Real Fall}   & 0   & 32 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -329,7 +329,7 @@ A matriz de confusão (Tabela~\ref{tab:confusao} e Figura~\ref{fig:confusao}) mo
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.55\textwidth]{confusion_matrix.png}
-  \caption{Visualização da matriz de confusão no conjunto de teste (171 verdadeiros negativos, 52 verdadeiros positivos, 0 falsos positivos, 0 falsos negativos).}
+  \caption{Visualização da matriz de confusão no conjunto de teste com split por vídeo (218 verdadeiros negativos, 32 verdadeiros positivos, 0 falsos positivos, 0 falsos negativos).}
   \label{fig:confusao}
 \end{figure}
 
@@ -351,6 +351,67 @@ Durante o treinamento, observou-se:
   \item O callback \texttt{ReduceLROnPlateau} foi acionado, reduzindo a taxa de aprendizado de $1 \times 10^{-4}$ para $1{,}56 \times 10^{-6}$;
   \item Não houve sinal de \textit{overfitting}: as curvas de treino e validação evoluíram de forma paralela, conforme evidenciado na Figura~\ref{fig:curvas}.
 \end{itemize}
+
+\subsection{Estudo de Ablação}
+\label{sec:ablation}
+
+Para quantificar a contribuição de cada componente arquitetural, foram realizados seis experimentos controlados sobre o mesmo split por vídeo (80/20), variando um único elemento por vez. Os resultados estão na Tabela~\ref{tab:ablation}.
+
+\begin{table}[H]
+\centering
+\caption{Estudo de ablação: impacto de cada componente sobre o conjunto de teste (250 amostras, split por vídeo).}
+\label{tab:ablation}
+\begin{tabularx}{\textwidth}{lXcccc}
+\toprule
+\textbf{Experimento} & \textbf{Configuração} & \textbf{Acurácia} & \textbf{F1-Fall} & \textbf{AUC} & \textbf{Loss (val)} \\
+\midrule
+Modelo completo & CNN+LSTM-64, aug., fine-tune 30 & 100\% & 1,000 & 1,000 & $3{,}93 \times 10^{-4}$ \\
+Sem augmentation & CNN+LSTM, aug.\ desativado & 100\% & 1,000 & 1,000 & $6{,}76 \times 10^{-4}$ \\
+Sem fine-tuning & MobileNetV2 totalmente congelada & 100\% & 1,000 & 1,000 & $9{,}32 \times 10^{-5}$ \\
+LSTM-128 & Capacidade temporal dobrada & 100\% & 1,000 & 1,000 & $2{,}41 \times 10^{-4}$ \\
+Backbone congelado & CNN+LSTM com backbone fixo & 100\% & 1,000 & 1,000 & $6{,}83 \times 10^{-5}$ \\
+\textbf{Baseline CNN-only} & \textbf{MobileNetV2 sem LSTM} & \textbf{100\%} & \textbf{1,000} & \textbf{1,000} & $\mathbf{1{,}29 \times 10^{-5}}$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Todos os experimentos convergiram para 100\% de acurácia, incluindo o \textit{baseline} CNN-only (sem LSTM), que convergiu em apenas 17 épocas (ativação do EarlyStopping) e alcançou a menor perda de validação do estudo ($1{,}29 \times 10^{-5}$). Esse resultado indica que, no dataset \textit{UR Fall Detection}, as características espaciais extraídas pela MobileNetV2 são suficientes para discriminação perfeita entre as classes, sem que a modelagem temporal explícita da LSTM adicione ganho mensurável. A análise dos valores de loss sugere que configurações com menos parâmetros livres (backbone congelado e CNN-only) tendem a convergir numericamente melhor neste dataset, provavelmente por menor risco de ajuste excessivo. Esses achados são discutidos na Seção~\ref{sec:discussao}.
+
+\subsection{Avaliação no Le2i Fall Detection Dataset}
+\label{sec:le2i}
+
+Para validar o modelo em condições mais desafiadoras e quantificar o impacto de cada componente arquitetural em um benchmark não controlado, o experimento foi replicado no \textbf{Le2i Fall Detection Dataset} \citep{charfi2013}, que contém vídeos gravados em quatro ambientes distintos com iluminação e fundos variáveis (\textit{Coffee Room}, \textit{Home}, \textit{Lecture Room} adaptado, \textit{Office}). Após o pipeline de extração de clipes por anotação temporal (janela de queda delimitada por frame de início e fim), foram obtidos \textbf{191 clipes} (107 Normal + 84 Fall), totalizando \textbf{443 amostras de teste} com split por vídeo (80/20). A Tabela~\ref{tab:le2i} apresenta os resultados dos experimentos concluídos.
+
+\begin{table}[H]
+\centering
+\caption{Resultados no Le2i Fall Detection Dataset (443 amostras de teste, split por vídeo).}
+\label{tab:le2i}
+\begin{tabularx}{\textwidth}{lXccccc}
+\toprule
+\textbf{Configuração} & \textbf{Descrição} & \textbf{Acurácia} & \textbf{Sensib.} & \textbf{Especif.} & \textbf{F1-Fall} & \textbf{AUC} \\
+\midrule
+CNN+LSTM (proposto) & Fine-tune 30, LSTM-64 & 97,07\% & \textbf{100\%} & 95,5\% & 0,959 & 0,987 \\
+CNN-only (baseline) & MobileNetV2 sem LSTM & 97,07\% & \textbf{100\%} & 95,5\% & 0,959 & 0,989 \\
+CNN+LSTM frozen     & Backbone congelado    & 96,16\% & 92,8\%         & 97,9\% & 0,943 & 0,983 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.55\textwidth]{confusion_matrix_le2i.png}
+  \caption{Matriz de confusão do modelo CNN+LSTM no Le2i (278 VN, 152 VP, 13 FP, 0 FN).}
+  \label{fig:confusao_le2i}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.55\textwidth]{roc_curve_le2i.png}
+  \caption{Curva ROC do modelo CNN+LSTM no Le2i (AUC = 0,987).}
+  \label{fig:roc_le2i}
+\end{figure}
+
+O resultado mais relevante é a \textbf{sensibilidade de 100\%} (recall de queda) para os modelos com fine-tuning: nenhuma queda real foi classificada como Normal (FN = 0), o que é o critério clínico mais crítico para sistemas de socorro. O modelo frozen, apesar de maior especificidade (97,9\%), apresentou 11 falsos negativos — ou seja, 11 quedas não detectadas — evidenciando que o fine-tuning é indispensável para segurança clínica. A diferença de acurácia entre CNN+LSTM e CNN-only neste dataset é nula (97,07\%), porém o CNN+LSTM apresenta AUC-ROC ligeiramente inferior (0,987 vs.\ 0,989), o que sugere que, para o Le2i, as características espaciais do MobileNetV2 já são suficientes para a discriminação. Esses resultados corroboram a hipótese de que datasets mais desafiadores são necessários para mensurar o ganho temporal da LSTM.
 
 \subsection{Distribuição das Amostras}
 
@@ -399,14 +460,17 @@ Os testes de integração via MQTT demonstraram:
 \section{Discussão}
 
 \subsection{Análise dos Resultados}
+\label{sec:discussao}
 
 Os resultados de 100\% de acurácia, embora notáveis, devem ser interpretados com cautela. O dataset \textit{UR Fall Detection}, apesar de ser um benchmark consolidado na literatura \citep{kwolek2014}, possui limitações inerentes:
 
 \begin{enumerate}[nosep]
-  \item \textbf{Volume limitado:} 70 vídeos originais (30 quedas + 40 ADLs) expandidos para 1\,111 amostras via janela deslizante. Amostras vizinhas compartilham a maioria dos quadros, o que pode inflacionar métricas quando o split treino/teste ocorre por janela (e não por vídeo);
+  \item \textbf{Volume limitado:} 70 vídeos originais (30 quedas + 40 ADLs) expandidos para 1\,111 amostras via janela deslizante. O split por vídeo adotado neste trabalho (\texttt{GroupShuffleSplit}) garante que todas as janelas de um mesmo vídeo pertençam exclusivamente ao treino ou ao teste, eliminando o risco de data leakage entre janelas temporalmente adjacentes. Ainda assim, os 100\% de acurácia foram mantidos com essa divisão mais rigorosa, o que não valida o modelo em cenários reais, mas confirma que as métricas não são artificialmente infladas pelo leakage;
   \item \textbf{Ambiente controlado:} todos os vídeos foram gravados em laboratório com fundo relativamente estático, o que difere de ambientes domésticos reais;
   \item \textbf{Diversidade limitada de participantes:} poucos indivíduos realizaram as simulações de queda, limitando a variabilidade de biotipos e estilos de movimento.
 \end{enumerate}
+
+O estudo de ablação (Seção~\ref{sec:ablation}) revelou que o \textit{baseline} CNN-only também alcança 100\% de acurácia no URFD, indicando que o dataset opera abaixo do limiar de dificuldade necessário para diferenciar arquiteturas. A avaliação no Le2i (Seção~\ref{sec:le2i}), por sua vez, confirma essa hipótese: em condições não controladas, CNN+LSTM e CNN-only convergem para a mesma acurácia (97,07\%), mas ambos superam o modelo com backbone congelado (96,16\%), que apresentou 11 falsos negativos — quedas não detectadas. O resultado mais significativo do Le2i é a \textbf{sensibilidade de 100\%} (zero falsos negativos) dos modelos com fine-tuning, demonstrando que o ajuste fino da MobileNetV2 é determinante para a segurança clínica do sistema, independentemente de a LSTM adicionar ganho mensurável de acurácia neste benchmark.
 
 Conforme demonstrado por \citet{sisfall2017}, algoritmos treinados com dados de jovens apresentam degradação significativa de desempenho quando aplicados a idosos, evidenciando que a generalização do modelo proposto para a população-alvo requer validação adicional com dados mais representativos.
 
@@ -422,10 +486,12 @@ A Tabela~\ref{tab:comparacao} compara os resultados do presente trabalho com abo
 \toprule
 \textbf{Trabalho} & \textbf{Método} & \textbf{Acurácia} & \textbf{Sensib.} & \textbf{Especif.} \\
 \midrule
-\citet{kwolek2014} & SVM + profundidade + acelerômetro & 98,33\% & 100\% & 96,67\% \\
-\citet{kwolek2014} & Limiar (UFT) & 95,00\% & 100\% & 90,00\% \\
+\citet{kwolek2014} & SVM + profundidade + acelerômetro (URFD) & 98,33\% & 100\% & 96,67\% \\
+\citet{kwolek2014} & Limiar UFT (URFD) & 95,00\% & 100\% & 90,00\% \\
 \citet{sisfall2017} & Limiar C8 (SisFall) & 96,10\% & 95,54\% & 96,38\% \\
-\textbf{Presente trabalho} & \textbf{CNN-LSTM (MobileNetV2)} & \textbf{100\%} & \textbf{100\%} & \textbf{100\%} \\
+\citet{charfi2013} & SVM + descritores espaço-temporais (Le2i) & 93,50\% & 91,30\% & 95,20\% \\
+\textbf{Presente trabalho} & \textbf{CNN-LSTM (URFD, split por vídeo)} & \textbf{100\%} & \textbf{100\%} & \textbf{100\%} \\
+\textbf{Presente trabalho} & \textbf{CNN-LSTM (Le2i, split por vídeo)} & \textbf{97,07\%} & \textbf{100\%} & \textbf{95,5\%} \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -438,10 +504,10 @@ As principais limitações identificadas são:
 
 \begin{itemize}[nosep]
   \item \textbf{Generalização:} o modelo precisa ser validado em ambientes reais, com câmeras diferentes, variações de iluminação e participantes idosos;
-  \item \textbf{Dataset ampliado:} a inclusão de datasets complementares (SisFall, Kaggle Fall Detection) e a coleta de dados próprios com câmeras reais é necessária;
+  \item \textbf{Dataset ampliado:} a inclusão de datasets complementares (SisFall, Kaggle Fall Detection) e a coleta de dados próprios com câmeras reais é necessária para que a contribuição temporal da LSTM possa ser mensurada em benchmarks mais desafiadores;
   \item \textbf{Privacidade:} o uso de câmeras em ambientes domésticos levanta questões éticas que podem ser mitigadas com processamento local (edge computing) e exclusão de armazenamento de imagens;
-  \item \textbf{Hardware embarcado:} a execução do modelo diretamente no ESP32 ou em um Raspberry Pi eliminaria a dependência do PC;
-  \item \textbf{Notificações em background:} a Etapa~4 do aplicativo mobile (notificações push quando em segundo plano) ainda está pendente de implementação.
+  \item \textbf{Hardware embarcado:} a execução do modelo TFLite (2,4\,MB) diretamente em um Raspberry Pi eliminaria a dependência do PC e representa um passo natural de continuação;
+  \item \textbf{Notificações em background:} o módulo de notificações push no aplicativo mobile (segundo plano) ainda está pendente de implementação.
 \end{itemize}
 
 % ============================================================
@@ -455,7 +521,9 @@ O sistema integrou com sucesso três camadas de alerta — detecção por câmer
 
 As otimizações de inferência (TFLite, skip frames, buffer circular, chamada direta do modelo) viabilizaram a execução do sistema em hardware limitado (CPU Intel i7, 8\,GB RAM), demonstrando que a abordagem é viável para implantação em ambientes com recursos computacionais modestos.
 
-Como trabalhos futuros, destacam-se a validação do modelo em ambientes domésticos reais com participantes idosos, a ampliação do dataset com dados próprios e de fontes complementares, a migração da inferência para dispositivos de borda (\textit{edge}) e a finalização do módulo de notificações push no aplicativo mobile. O código-fonte completo do projeto está disponível em \url{https://github.com/Nelson-esilva/Fall-Detect-System}.
+A avaliação cruzada no Le2i Fall Detection Dataset, em quatro ambientes não controlados, confirmou a robustez do sistema: o modelo CNN+LSTM com fine-tuning alcançou 97,07\% de acurácia e \textbf{100\% de sensibilidade} (zero quedas não detectadas), superando o modelo com backbone congelado que apresentou 11 falsos negativos. Esses resultados demonstram que o fine-tuning da MobileNetV2 é o componente mais crítico para a segurança clínica do sistema.
+
+Como trabalhos futuros, destacam-se a avaliação em datasets com participantes idosos (UP-Fall Detection), a migração da inferência para dispositivos de borda (\textit{edge}) e a finalização do módulo de notificações push no aplicativo mobile. O código-fonte completo do projeto está disponível em \url{https://github.com/Nelson-esilva/Fall-Detect-System}.
 
 % ============================================================
 %  AGRADECIMENTOS
@@ -469,6 +537,11 @@ Os autores agradecem ao Programa de Apoio à Iniciação Científica (PAIC) da F
 % ============================================================
 \renewcommand{\refname}{Referências}
 \begin{thebibliography}{99}
+
+\bibitem[Charfi \textit{et al.}(2013)]{charfi2013}
+CHARFI, I.; MITÉRAN, J.; DUBOIS, J.; ATRI, M.; TOURKI, R.
+Optimised spatio-temporal descriptors for real-time fall detection: comparison of SVM and Adaboost based classification.
+\textit{Journal of Electronic Imaging}, v.~22, n.~4, p.~041003, out. 2013.
 
 \bibitem[Chhetri \textit{et al.}(2021)]{chhetri2021}
 CHHETRI, S.; ALSADOON, A.; AL-DALA'IN, T.; PRASAD, P.\,W.\,C.; RASHID, T.\,A.; MAAG, A.

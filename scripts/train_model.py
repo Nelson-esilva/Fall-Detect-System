@@ -5,7 +5,13 @@ import cv2
 import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import train_test_split, GroupShuffleSplit
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    roc_auc_score,
+    roc_curve,
+    precision_recall_fscore_support,
+)
 import json
 import csv
 import datetime
@@ -44,8 +50,9 @@ def make_run_dir() -> str:
 
 def save_history(history, run_dir: str):
     history_path = os.path.join(run_dir, "history.json")
+    serializable = {k: [float(v) for v in vals] for k, vals in history.history.items()}
     with open(history_path, "w", encoding="utf-8") as f:
-        json.dump(history.history, f, ensure_ascii=False, indent=2)
+        json.dump(serializable, f, ensure_ascii=False, indent=2)
 
     csv_path = os.path.join(run_dir, "history.csv")
     keys = list(history.history.keys())
@@ -82,7 +89,8 @@ def save_history(history, run_dir: str):
 
 
 def save_eval_artifacts(model, X_test, y_test, run_dir: str):
-    y_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0).reshape(-1)
+    X_test_f = X_test.astype(np.float32) / 255.0 if X_test.dtype == np.uint8 else X_test
+    y_prob = model.predict(X_test_f, batch_size=BATCH_SIZE, verbose=0).reshape(-1)
     y_pred = (y_prob > 0.5).astype(np.int32)
 
     report = classification_report(y_test, y_pred, target_names=CLASSES, digits=4, zero_division=0)
@@ -120,11 +128,52 @@ def save_eval_artifacts(model, X_test, y_test, run_dir: str):
     except Exception as e:
         print(f"Aviso: falha ao salvar arrays: {e}")
 
+    extra_metrics = {}
+    try:
+        # CLASSES = ["Fall", "Normal"] -> índice Fall=0, Normal=1 (ver configs)
+        # Assumimos label positivo = Fall (classe de interesse clínico).
+        # Para AUC, a probabilidade de "Fall" é (1 - y_prob) se a sigmoid foi
+        # treinada com label 1 = Normal. Detecta via heurística: se mais amostras
+        # de y_test == 1 têm y_prob alto, então 1 é a classe positiva da sigmoid.
+        prec, rec, f1, _ = precision_recall_fscore_support(
+            y_test, y_pred, labels=[0, 1], zero_division=0
+        )
+        cls0, cls1 = CLASSES[0], CLASSES[1]
+        extra_metrics[f"precision_{cls0.lower()}"] = float(prec[0])
+        extra_metrics[f"recall_{cls0.lower()}"] = float(rec[0])
+        extra_metrics[f"f1_{cls0.lower()}"] = float(f1[0])
+        extra_metrics[f"precision_{cls1.lower()}"] = float(prec[1])
+        extra_metrics[f"recall_{cls1.lower()}"] = float(rec[1])
+        extra_metrics[f"f1_{cls1.lower()}"] = float(f1[1])
 
-def save_run_metadata(run_dir: str, extra: dict):
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+        extra_metrics.update({"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)})
+
+        auc = float(roc_auc_score(y_test, y_prob))
+        extra_metrics["auc_roc"] = auc
+
+        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        fig, ax = plt.subplots(figsize=(4.8, 4.2))
+        ax.plot(fpr, tpr, label=f"AUC = {auc:.4f}")
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", alpha=0.6)
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.set_title("ROC Curve")
+        ax.legend(loc="lower right")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(run_dir, "roc_curve.png"), dpi=200)
+        plt.close(fig)
+    except Exception as e:
+        print(f"Aviso: falha ao calcular métricas extras: {e}")
+
+    return extra_metrics
+
+
+def save_run_metadata(run_dir: str, extra: dict, data_dir=None):
     meta = {
         "timestamp": os.path.basename(run_dir).replace("run-", ""),
-        "data_dir": str(DATA_DIR),
+        "data_dir": str(data_dir or DATA_DIR),
         "img_height": IMG_HEIGHT,
         "img_width": IMG_WIDTH,
         "sequence_length": SEQUENCE_LENGTH,
@@ -153,8 +202,7 @@ def extract_sequences_from_video(video_path: str, label: int):
         if not ret:
             break
         frame = cv2.resize(frame, (IMG_WIDTH, IMG_HEIGHT))
-        frame = frame.astype(np.float32) / 255.0
-        frames.append(frame)
+        frames.append(frame)  # uint8, normaliza no pipeline tf.data
     cap.release()
 
     sequences = []
@@ -166,11 +214,14 @@ def extract_sequences_from_video(video_path: str, label: int):
     return sequences, label, os.path.basename(video_path), len(frames)
 
 
-def build_dataset():
+def build_dataset(data_dir=None):
     """
     Carrega vídeos e retorna arrays numpy de sequências, labels e IDs de vídeo.
     O video_id permite fazer split por vídeo (evita data leakage).
+    data_dir: caminho para a pasta com subpastas Normal/ e Fall/.
+              Se None, usa DATA_DIR de configs/config.py.
     """
+    data_dir = data_dir or DATA_DIR
     all_sequences = []
     all_labels = []
     all_video_ids = []
@@ -179,9 +230,10 @@ def build_dataset():
     print("=" * 50)
     print("CARREGANDO DATASET")
     print("=" * 50)
+    print(f"  Fonte: {data_dir}")
 
     for class_index, class_name in enumerate(CLASSES):
-        class_dir = os.path.join(DATA_DIR, class_name)
+        class_dir = os.path.join(data_dir, class_name)
         if not os.path.exists(class_dir):
             print(f"AVISO: Pasta '{class_dir}' não encontrada!")
             continue
@@ -211,7 +263,7 @@ def build_dataset():
         return np.array([]), np.array([]), np.array([])
 
     return (
-        np.array(all_sequences, dtype=np.float32),
+        np.array(all_sequences, dtype=np.uint8),
         np.array(all_labels),
         np.array(all_video_ids),
     )
@@ -227,6 +279,8 @@ def create_augmented_dataset(X, y, batch_size):
     dataset = tf.data.Dataset.from_tensor_slices((X, y))
 
     def augment(sequence, label):
+        sequence = tf.cast(sequence, tf.float32) / 255.0
+
         if tf.random.uniform([]) > 0.5:
             sequence = tf.image.flip_left_right(
                 tf.reshape(sequence, [-1, IMG_HEIGHT, IMG_WIDTH, 3])
@@ -273,19 +327,27 @@ if __name__ == "__main__":
                         help="Estratégia de split: 'video' (sem leakage) ou 'window' (legacy)")
     parser.add_argument("--tag", type=str, default="",
                         help="Tag descritiva para o run (salva nos metadados)")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Número de épocas (sobrescreve configs/config.py)")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Caminho para o dataset (pasta com Normal/ e Fall/). "
+                             "Default: DATA_DIR de configs/config.py")
     args = parser.parse_args()
 
     img_h = args.img_size or IMG_HEIGHT
     img_w = args.img_size or IMG_WIDTH
     ft_layers = args.fine_tune_layers if args.fine_tune_layers is not None else FINE_TUNE_LAYERS
+    n_epochs = args.epochs if args.epochs is not None else EPOCHS
 
-    X, y, video_ids = build_dataset()
+    effective_data_dir = args.data_dir or str(DATA_DIR)
+    X, y, video_ids = build_dataset(data_dir=effective_data_dir)
 
     run_dir = make_run_dir()
 
     n_videos = len(np.unique(video_ids)) if len(video_ids) > 0 else 0
     save_run_metadata(
         run_dir,
+        data_dir=effective_data_dir,
         extra={
             "n_samples": int(len(X)),
             "n_videos": n_videos,
@@ -354,11 +416,14 @@ if __name__ == "__main__":
         print(f"  Teste  {CLASSES[idx]}: {count}")
 
     # Dataset com augmentation
+    _normalize = lambda s, l: (tf.cast(s, tf.float32) / 255.0, l)
+
     if args.no_augmentation:
         print("Data augmentation DESATIVADO")
         train_ds = (
             tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), reshuffle_each_iteration=True)
+            .map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE)
             .prefetch(tf.data.AUTOTUNE)
         )
@@ -368,6 +433,7 @@ if __name__ == "__main__":
 
     val_ds = (
         tf.data.Dataset.from_tensor_slices((X_test, y_test))
+        .map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
         .batch(BATCH_SIZE)
         .prefetch(tf.data.AUTOTUNE)
     )
@@ -406,10 +472,13 @@ if __name__ == "__main__":
         )
     model.summary()
 
+    # Cada experimento salva seu próprio modelo dentro do run_dir
+    run_model_path = os.path.join(run_dir, "model.keras")
+
     # Callbacks
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
-            str(MODEL_PATH), save_best_only=True,
+            run_model_path, save_best_only=True,
             monitor='val_accuracy', mode='max', verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
@@ -430,7 +499,7 @@ if __name__ == "__main__":
 
     history = model.fit(
         train_ds,
-        epochs=EPOCHS,
+        epochs=n_epochs,
         validation_data=val_ds,
         callbacks=callbacks,
     )
@@ -444,19 +513,23 @@ if __name__ == "__main__":
     loss, accuracy = model.evaluate(val_ds, verbose=0)
     print(f"Acurácia no conjunto de teste: {accuracy * 100:.2f}%")
     print(f"Loss no conjunto de teste: {loss:.4f}")
-    print(f"\nModelo Keras salvo em: {MODEL_PATH}")
+    print(f"\nModelo Keras salvo em: {run_model_path}")
 
+    extra_metrics = save_eval_artifacts(model, X_test, y_test, run_dir) or {}
+    final_metrics = {"loss": float(loss), "accuracy": float(accuracy), **extra_metrics}
     with open(os.path.join(run_dir, "final_metrics.json"), "w", encoding="utf-8") as f:
-        json.dump({"loss": float(loss), "accuracy": float(accuracy)}, f, ensure_ascii=False, indent=2)
+        json.dump(final_metrics, f, ensure_ascii=False, indent=2)
 
-    save_eval_artifacts(model, X_test, y_test, run_dir)
-
-    # Converter para TFLite
+    # Converter para TFLite — salva junto ao run e também no path global
     print("\n" + "=" * 50)
     print("CONVERTENDO PARA TFLITE")
     print("=" * 50)
+    run_tflite_path = os.path.join(run_dir, "model.tflite")
     try:
-        convert_to_tflite(model, str(TFLITE_MODEL_PATH), quantize=True)
+        convert_to_tflite(model, run_tflite_path, quantize=True)
+        # Copia o melhor modelo (full-model) para o path global também
+        if args.tag == "full-model":
+            convert_to_tflite(model, str(TFLITE_MODEL_PATH), quantize=True)
     except Exception as e:
         print(f"Aviso: falha na conversão TFLite: {e}")
 
